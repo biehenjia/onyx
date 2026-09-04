@@ -1,0 +1,36 @@
+{
+	"compilerOptions": {
+		"baseUrl": ".",
+		"paths": {
+			// npm nests extra copies of these under @codemirror/lint and
+			// @codemirror/lsp-client (their peer ranges are ahead of the
+			// versions Obsidian 1.13 hard-pins). esbuild externalizes all of
+			// them to Obsidian's single copy at bundle time; pin type
+			// resolution to the hoisted copy too so TransactionSpec/EditorState
+			// etc. keep one identity across packages.
+			"@codemirror/state": ["node_modules/@codemirror/state"],
+			"@codemirror/view": ["node_modules/@codemirror/view"],
+			"@codemirror/lint": ["node_modules/@codemirror/lint"]
+		},
+		"inlineSourceMap": true,
+		"inlineSources": true,
+		"module": "ESNext",
+		"target": "ES2022",
+		"allowJs": true,
+		"noImplicitAny": true,
+		"moduleResolution": "bundler",
+		"importHelpers": true,
+		"isolatedModules": true,
+		"strict": true,
+		"strictNullChecks": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"lib": [
+			"DOM",
+			"ES2022"
+		]
+	},
+	"include": [
+		"src/**/*.ts"
+	]
+}

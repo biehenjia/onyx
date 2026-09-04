@@ -1,0 +1,583 @@
+/* ======================================================================
+   Onyx code view — token layer
+   All values map onto Obsidian's colour-layer primitives (--color-*,
+   --mono-rgb-*, --radius-*, --shadow-*) and semantic vars. Override any
+   --onyx-* property in a CSS snippet to retune without touching the plugin.
+   ====================================================================== */
+
+.onyx-code-view {
+	background-color: var(--background-primary);
+
+	/* typography — overridden per view from settings via inline style */
+	--onyx-font-family: var(--font-monospace);
+	--onyx-font-size: var(--font-text-size);
+	--onyx-line-height: 1.5;
+	--onyx-font-features: "calt", "liga";
+
+	/* layout */
+	--onyx-pad-block: 6px;
+	--onyx-pad-inline: 16px;
+	--onyx-gutter-pad: 8px;
+
+	/* chrome */
+	--onyx-cursor: var(--caret-color, var(--text-normal));
+	--onyx-selection: var(--text-selection);
+	--onyx-selection-match: var(--text-highlight-bg);
+	--onyx-gutter-fg: var(--text-faint);
+	--onyx-gutter-active-fg: var(--text-normal);
+	--onyx-panel-bg: var(--background-secondary);
+	--onyx-panel-border: var(--background-modifier-border);
+	--onyx-panel-radius: var(--radius-m);
+	--onyx-panel-shadow: var(--shadow-s);
+
+	/* syntax — calm assignment over Obsidian's colour primitives */
+	--onyx-syntax-comment: var(--text-faint);
+	--onyx-syntax-doc: var(--text-muted);
+	--onyx-syntax-keyword: var(--color-purple);
+	--onyx-syntax-constant: var(--color-orange);
+	--onyx-syntax-number: var(--color-orange);
+	--onyx-syntax-string: var(--color-green);
+	--onyx-syntax-regexp: var(--color-cyan);
+	--onyx-syntax-escape: var(--color-cyan);
+	--onyx-syntax-function: var(--color-blue);
+	--onyx-syntax-type: var(--color-yellow);
+	--onyx-syntax-property: var(--color-red);
+	--onyx-syntax-attribute: var(--color-yellow);
+	--onyx-syntax-variable: var(--text-normal);
+	--onyx-syntax-operator: var(--text-muted);
+	--onyx-syntax-punctuation: var(--text-muted);
+	--onyx-syntax-tag: var(--color-red);
+	--onyx-syntax-meta: var(--color-yellow);
+	--onyx-syntax-heading: var(--color-blue);
+	--onyx-syntax-link: var(--text-accent);
+	--onyx-syntax-invalid: var(--text-error);
+}
+
+/*
+ * Alpha washes over --mono-rgb-100, the theme's *foreground* extreme (it flips
+ * with the theme, so `rgba(var(--mono-rgb-100), n)` reads as "n of the text
+ * colour" in both light and dark). The dark block here used to reference
+ * --mono-rgb-0 — the *background* extreme — which paints a black wash on a dark
+ * canvas: an invisible, muddy indent guide. Both themes now use -100, matching
+ * how Obsidian tints its own indentation guides.
+ */
+.theme-dark .onyx-code-view {
+	--onyx-active-line: rgba(var(--mono-rgb-100), 0.04);
+	--onyx-indent-guide: rgba(var(--mono-rgb-100), 0.12);
+	--onyx-indent-guide-active: rgba(var(--mono-rgb-100), 0.3);
+	--onyx-bracket-match: rgba(var(--mono-rgb-100), 0.15);
+}
+
+.theme-light .onyx-code-view {
+	--onyx-active-line: rgba(var(--mono-rgb-100), 0.04);
+	--onyx-indent-guide: rgba(var(--mono-rgb-100), 0.1);
+	--onyx-indent-guide-active: rgba(var(--mono-rgb-100), 0.26);
+	--onyx-bracket-match: rgba(var(--mono-rgb-100), 0.1);
+}
+
+/* ---------------------------------------------------------------------- */
+
+.workspace-leaf-content[data-type="onyx-code-view"] .view-content {
+	padding: 0;
+	overflow: hidden;
+}
+
+.onyx-code-view .cm-editor {
+	height: 100%;
+}
+
+.onyx-code-view .cm-scroller {
+	font-family: var(--onyx-font-family);
+	font-size: var(--onyx-font-size);
+	line-height: var(--onyx-line-height);
+	font-feature-settings: var(--onyx-font-features);
+}
+
+.onyx-code-view .cm-editor {
+	position: relative;
+}
+
+.onyx-code-view .cm-sticky-scroll {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	z-index: 5;
+	display: none;
+	box-sizing: border-box;
+	max-height: 40%;
+	overflow: hidden;
+	background: var(--background-primary);
+	box-shadow: 0 1px 0 var(--background-modifier-border);
+	font-family: var(--onyx-font-family);
+	font-size: var(--onyx-font-size);
+	line-height: var(--onyx-line-height);
+}
+
+.onyx-code-view .cm-sticky-scroll.is-active {
+	display: block;
+}
+
+.onyx-code-view .cm-sticky-scroll-line {
+	display: block;
+	width: 100%;
+	height: calc(1em * var(--onyx-line-height));
+	margin: 0;
+	padding: 0 4px;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+	color: var(--text-normal);
+	font: inherit;
+	text-align: left;
+	white-space: pre;
+	overflow: hidden;
+	cursor: pointer;
+}
+
+.onyx-code-view .cm-sticky-scroll-line:hover {
+	background: var(--background-modifier-hover);
+}
+
+/* Git changes against HEAD. Deleted lines are pinned to the following line. */
+.onyx-code-view .cm-gutter.onyx-git-gutter {
+	width: 4px;
+	min-width: 4px;
+}
+
+.onyx-git-marker {
+	display: block;
+	width: 3px;
+	height: 100%;
+	min-height: 1em;
+	background: var(--color-blue);
+}
+
+.onyx-git-marker.mod-added { background: var(--color-green); }
+.onyx-git-marker.mod-modified { background: var(--color-blue); }
+.onyx-git-marker.mod-deleted {
+	height: 3px;
+	min-height: 3px;
+	background: var(--color-red);
+}
+
+/* Obsidian applies its bright active-gutter colour after CodeMirror's injected
+ * theme. Override it at the plugin stylesheet layer with the editor's wash. */
+.onyx-code-view
+	.cm-editor
+	.cm-gutters
+	.cm-gutterElement.cm-activeLineGutter {
+	background-color: var(--onyx-active-line) !important;
+}
+
+/* Status bar ---------------------------------------------------------- */
+
+.onyx-status {
+	color: var(--text-muted);
+}
+
+.onyx-lsp-status {
+	color: var(--text-muted);
+}
+
+.onyx-lsp-status.mod-warning {
+	color: var(--text-warning);
+}
+
+.onyx-new-file-error {
+	min-height: 1.5em;
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+}
+
+.workspace-leaf-content[data-type="onyx-workspace-explorer"] .view-content {
+	padding: 0;
+	overflow: hidden;
+}
+
+.onyx-workspace-explorer-content {
+	display: flex;
+	flex-direction: column;
+}
+
+.onyx-workspace-explorer-content .nav-files-container {
+	flex: 1 1 auto;
+	overflow: auto;
+}
+
+.onyx-workspace-empty {
+	padding: var(--size-4-4);
+	color: var(--text-muted);
+}
+
+.workspace-leaf-content[data-type="onyx-symbols"] .view-content {
+	padding: 0;
+}
+
+.onyx-symbols-content {
+	overflow: auto;
+}
+
+.onyx-symbols-file,
+.onyx-symbols-empty {
+	padding: var(--size-4-2) var(--size-4-3);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.onyx-symbols-file {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	background: var(--background-secondary);
+	font-weight: var(--font-semibold);
+}
+
+.onyx-symbol-item .tree-item-self {
+	border-radius: 0;
+	padding-block: 2px;
+}
+
+.onyx-symbol-item .tree-item-icon {
+	display: flex;
+	align-items: center;
+	margin-inline-end: var(--size-4-1);
+}
+
+.onyx-symbol-item .tree-item-icon > svg {
+	width: 13px;
+	height: 13px;
+}
+
+.onyx-symbol-item .tree-item-flair {
+	max-width: 45%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-faint);
+}
+
+.workspace-leaf-content[data-type="onyx-workspace-explorer"] .onyx-git-file::after {
+	margin-inline-start: auto;
+	font-size: 10px;
+	font-weight: 600;
+	color: var(--text-muted);
+}
+
+.workspace-leaf-content[data-type="onyx-workspace-explorer"] .onyx-git-file.mod-modified::after { content: "M"; color: var(--color-yellow); }
+.workspace-leaf-content[data-type="onyx-workspace-explorer"] .onyx-git-file.mod-added::after { content: "A"; color: var(--color-green); }
+.workspace-leaf-content[data-type="onyx-workspace-explorer"] .onyx-git-file.mod-deleted::after { content: "D"; color: var(--color-red); }
+.workspace-leaf-content[data-type="onyx-workspace-explorer"] .onyx-git-file.mod-renamed::after { content: "R"; color: var(--color-blue); }
+.workspace-leaf-content[data-type="onyx-workspace-explorer"] .onyx-git-file.mod-untracked::after { content: "U"; color: var(--color-green); }
+.workspace-leaf-content[data-type="onyx-workspace-explorer"] .onyx-git-file.mod-conflicted::after { content: "!"; color: var(--color-red); }
+.workspace-leaf-content[data-type="onyx-workspace-explorer"] .onyx-git-folder > .nav-folder-title-content { color: var(--text-accent); }
+.workspace-leaf-content[data-type="onyx-workspace-explorer"] .onyx-buffer-dirty .nav-file-title-content::after {
+	content: " •";
+	color: var(--text-accent);
+}
+
+/* ======================================================================
+   Onyx file-explorer density — VS Code / Zed register
+   Retunes Obsidian's native explorer and Onyx's workspace explorer into a
+   compact list: smaller type, tight rows, shallow
+   per-level indent, thin indentation guides, square full-bleed
+   selection. Everything routes through an --onyx-nav-* token so a
+   snippet can retune without touching element rules; the tokens then map
+   onto Obsidian's own --nav-item-* / --file-line-height primitives.
+
+   Scoped to file-explorer leaves only — the outline, search, tag and
+   bookmarks panes share --nav-item-* and keep Obsidian's defaults.
+   ====================================================================== */
+
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) {
+	--onyx-nav-font-size: 13px;
+	--onyx-nav-line-height: 1.3;
+	--onyx-nav-row-pad-y: 2px;
+	--onyx-nav-row-pad-inline-start: var(--size-4-3);
+	--onyx-nav-row-pad-inline-end: var(--size-4-2);
+	/* total indent per nesting level (margin carries the guide line) */
+	--onyx-nav-indent: 12px;
+	--onyx-nav-guide-width: 1px;
+
+	/* map onto Obsidian's nav primitives */
+	--nav-item-size: var(--onyx-nav-font-size);
+	--nav-item-padding: var(--onyx-nav-row-pad-y)
+		var(--onyx-nav-row-pad-inline-end) var(--onyx-nav-row-pad-y)
+		var(--onyx-nav-row-pad-inline-start);
+	--nav-item-children-margin-start: var(--onyx-nav-indent);
+	--nav-item-children-padding-start: 0px;
+	--nav-indentation-guide-width: var(--onyx-nav-guide-width);
+	--file-line-height: var(--onyx-nav-line-height);
+
+	/* file-type lettermark tiles (see the ::before block below) */
+	--onyx-glyph-size: 15px;
+	--onyx-glyph-radius: 3px;
+	--onyx-glyph-font-size: 8px;
+	--onyx-glyph-gap: 6px;
+	/* default / unmatched extension — a faint dot keeps names aligned */
+	--onyx-glyph-color: var(--text-faint);
+}
+
+/* trim the container's own leading gap */
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-files-container {
+	padding-top: 2px;
+}
+
+/* square, full-width selection — the editor-list-row look */
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .tree-item-self {
+	border-radius: 0;
+	line-height: var(--onyx-nav-line-height);
+}
+
+/* pull the collapse chevron tight to the label and shrink it */
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .tree-item-icon.collapse-icon {
+	padding: 0;
+}
+
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"])
+	.tree-item-icon.collapse-icon
+	> svg {
+	width: 14px;
+	height: 14px;
+}
+
+/* demote the file-extension tag so rows read as one line of text */
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-tag {
+	font-size: 9px;
+	line-height: 1.4;
+	padding: 0 4px;
+}
+
+/* ----------------------------------------------------------------------
+   File-type lettermark tiles
+
+   A pure-CSS stand-in for language glyphs: a small tinted tile carrying
+   1–2 initials, rendered as a flex child of the row (.nav-file-title is
+   display:flex, so it centres for free). No fonts, no SVGs. Each type
+   sets two custom properties — --onyx-glyph-text and --onyx-glyph-color
+   — matched on the row's data-path (extension or exact filename). The
+   tint is a color-mix wash of that colour over transparent, with a
+   neutral fallback for engines without color-mix.
+
+   Disable wholesale in a snippet:
+     .nav-file-title::before { content: none !important; }
+   ---------------------------------------------------------------------- */
+
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title::before {
+	content: var(--onyx-glyph-text, "\00B7");
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	box-sizing: border-box;
+	width: var(--onyx-glyph-size);
+	height: var(--onyx-glyph-size);
+	margin-right: var(--onyx-glyph-gap);
+	border-radius: var(--onyx-glyph-radius);
+	font-family: var(--font-monospace);
+	font-size: var(--onyx-glyph-font-size);
+	font-weight: 700;
+	line-height: 1;
+	letter-spacing: 0.02em;
+	color: var(--onyx-glyph-color);
+	background-color: var(--background-modifier-hover);
+	background-color: color-mix(
+		in srgb,
+		var(--onyx-glyph-color) 15%,
+		transparent
+	);
+}
+
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".ts" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".mts" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".cts" i] {
+	--onyx-glyph-text: "TS";
+	--onyx-glyph-color: var(--color-blue);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".tsx" i] {
+	--onyx-glyph-text: "TX";
+	--onyx-glyph-color: var(--color-blue);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".js" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".mjs" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".cjs" i] {
+	--onyx-glyph-text: "JS";
+	--onyx-glyph-color: var(--color-yellow);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".jsx" i] {
+	--onyx-glyph-text: "JX";
+	--onyx-glyph-color: var(--color-yellow);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".py" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".pyi" i] {
+	--onyx-glyph-text: "PY";
+	--onyx-glyph-color: var(--color-blue);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".rs" i] {
+	--onyx-glyph-text: "RS";
+	--onyx-glyph-color: var(--color-orange);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".go" i] {
+	--onyx-glyph-text: "GO";
+	--onyx-glyph-color: var(--color-cyan);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".rb" i] {
+	--onyx-glyph-text: "RB";
+	--onyx-glyph-color: var(--color-red);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".c" i] {
+	--onyx-glyph-text: "C";
+	--onyx-glyph-color: var(--color-blue);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".h" i] {
+	--onyx-glyph-text: "H";
+	--onyx-glyph-color: var(--color-purple);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".cpp" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".cc" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".cxx" i] {
+	--onyx-glyph-text: "C+";
+	--onyx-glyph-color: var(--color-blue);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".hpp" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".hxx" i] {
+	--onyx-glyph-text: "H+";
+	--onyx-glyph-color: var(--color-purple);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".cs" i] {
+	--onyx-glyph-text: "C#";
+	--onyx-glyph-color: var(--color-green);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".java" i] {
+	--onyx-glyph-text: "JV";
+	--onyx-glyph-color: var(--color-red);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".kt" i] {
+	--onyx-glyph-text: "KT";
+	--onyx-glyph-color: var(--color-purple);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".swift" i] {
+	--onyx-glyph-text: "SW";
+	--onyx-glyph-color: var(--color-orange);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".php" i] {
+	--onyx-glyph-text: "PH";
+	--onyx-glyph-color: var(--color-purple);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".lua" i] {
+	--onyx-glyph-text: "LU";
+	--onyx-glyph-color: var(--color-blue);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".sh" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".bash" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".zsh" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".fish" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$="makefile" i] {
+	--onyx-glyph-text: "SH";
+	--onyx-glyph-color: var(--color-green);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".zig" i] {
+	--onyx-glyph-text: "ZG";
+	--onyx-glyph-color: var(--color-orange);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".nix" i] {
+	--onyx-glyph-text: "NX";
+	--onyx-glyph-color: var(--color-blue);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".sql" i] {
+	--onyx-glyph-text: "SQ";
+	--onyx-glyph-color: var(--color-cyan);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".css" i] {
+	--onyx-glyph-text: "CS";
+	--onyx-glyph-color: var(--color-blue);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".scss" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".sass" i] {
+	--onyx-glyph-text: "SC";
+	--onyx-glyph-color: var(--color-pink);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".html" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".htm" i] {
+	--onyx-glyph-text: "<>";
+	--onyx-glyph-color: var(--color-orange);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".xml" i] {
+	--onyx-glyph-text: "<>";
+	--onyx-glyph-color: var(--color-green);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".svg" i] {
+	--onyx-glyph-text: "SV";
+	--onyx-glyph-color: var(--color-orange);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".vue" i] {
+	--onyx-glyph-text: "VU";
+	--onyx-glyph-color: var(--color-green);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".md" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".mdx" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".markdown" i] {
+	--onyx-glyph-text: "MD";
+	--onyx-glyph-color: var(--text-muted);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".json" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".jsonc" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".json5" i] {
+	--onyx-glyph-text: "{}";
+	--onyx-glyph-color: var(--color-orange);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".yaml" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".yml" i] {
+	--onyx-glyph-text: "YM";
+	--onyx-glyph-color: var(--text-muted);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".toml" i] {
+	--onyx-glyph-text: "TM";
+	--onyx-glyph-color: var(--text-muted);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".ini" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".conf" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".cfg" i] {
+	--onyx-glyph-text: "CF";
+	--onyx-glyph-color: var(--text-muted);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".env" i] {
+	--onyx-glyph-text: "EN";
+	--onyx-glyph-color: var(--color-yellow);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".lock" i] {
+	--onyx-glyph-text: "LK";
+	--onyx-glyph-color: var(--text-faint);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$="gitignore" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$="gitattributes" i] {
+	--onyx-glyph-text: "GT";
+	--onyx-glyph-color: var(--color-orange);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$="dockerfile" i] {
+	--onyx-glyph-text: "DK";
+	--onyx-glyph-color: var(--color-blue);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".txt" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".log" i] {
+	--onyx-glyph-text: "TX";
+	--onyx-glyph-color: var(--text-faint);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".csv" i] {
+	--onyx-glyph-text: "CV";
+	--onyx-glyph-color: var(--color-green);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".pdf" i] {
+	--onyx-glyph-text: "PD";
+	--onyx-glyph-color: var(--color-red);
+}
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".png" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".jpg" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".jpeg" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".gif" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".webp" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".bmp" i],
+.workspace-leaf-content:is([data-type="file-explorer"], [data-type="onyx-workspace-explorer"]) .nav-file-title[data-path$=".avif" i] {
+	--onyx-glyph-text: "IM";
+	--onyx-glyph-color: var(--color-purple);
+}

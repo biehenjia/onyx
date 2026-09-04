@@ -1,0 +1,60 @@
+{
+	"name": "onyx",
+	"version": "0.0.1",
+	"description": "Edit source files with CodeMirror 6 and language servers, without leaving the app.",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"lint": "eslint src",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"version": "node version-bump.mjs && git add manifest.json versions.json"
+	},
+	"keywords": [
+		"obsidian",
+		"editor",
+		"codemirror",
+		"lsp"
+	],
+	"author": "biehenjia",
+	"license": "MIT",
+	"devDependencies": {
+		"@codemirror/autocomplete": "^6.18.4",
+		"@codemirror/commands": "^6.7.1",
+		"@codemirror/language": "^6.10.8",
+		"@codemirror/lint": "^6.8.4",
+		"@codemirror/search": "^6.5.8",
+		"@codemirror/state": "6.5.0",
+		"@codemirror/view": "6.38.6",
+		"@lezer/common": "^1.2.3",
+		"@lezer/highlight": "^1.2.1",
+		"@lezer/lr": "^1.4.2",
+		"@types/node": "^22.10.0",
+		"builtin-modules": "^4.0.0",
+		"esbuild": "^0.24.0",
+		"eslint": "^9.17.0",
+		"eslint-plugin-obsidianmd": "^0.4.0",
+		"obsidian": "latest",
+		"tslib": "^2.8.1",
+		"typescript": "^5.7.2",
+		"typescript-eslint": "^8.19.0",
+		"vitest": "^3.2.7"
+	},
+	"dependencies": {
+		"@codemirror/lang-cpp": "^6.0.2",
+		"@codemirror/lang-css": "^6.3.1",
+		"@codemirror/lang-go": "^6.0.1",
+		"@codemirror/lang-html": "^6.4.9",
+		"@codemirror/lang-javascript": "^6.2.2",
+		"@codemirror/lang-json": "^6.0.1",
+		"@codemirror/lang-python": "^6.1.7",
+		"@codemirror/lang-rust": "^6.0.1",
+		"@codemirror/lang-sql": "^6.8.0",
+		"@codemirror/lang-yaml": "^6.1.2",
+		"@codemirror/lsp-client": "^6.2.5",
+		"@replit/codemirror-indentation-markers": "^6.5.3",
+		"vscode-jsonrpc": "^8.2.1",
+		"vscode-languageserver-protocol": "^3.17.5"
+	}
+}
