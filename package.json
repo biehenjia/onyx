@@ -1,6 +1,6 @@
 {
 	"name": "onyx",
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"description": "Edit source files with CodeMirror 6 and language servers, without leaving the app.",
 	"main": "main.js",
 	"scripts": {
