@@ -191,7 +191,7 @@ const chrome = EditorView.theme({
 		borderRadius: "2px",
 	},
 	".cm-searchMatch.cm-searchMatch-selected": {
-		backgroundColor: "var(--text-highlight-bg)",
+		backgroundColor: "var(--onyx-search-selection)",
 	},
 	".cm-scroller::-webkit-scrollbar": {
 		width: "12px",

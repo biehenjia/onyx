@@ -33,6 +33,11 @@ export interface StickyHeader {
 	text: string;
 }
 
+interface StickyMeasurement {
+	paddingLeft: number;
+	headers: StickyHeader[];
+}
+
 function renderHighlightedLine(
 	parent: HTMLElement,
 	state: EditorState,
@@ -70,6 +75,7 @@ export function stickyHeaders(
 	state: EditorState,
 	visibleFrom: number,
 	languageId: string | null,
+	includeVisibleLine = false,
 ): StickyHeader[] {
 	const wanted = languageId ? SCOPES[languageId] : undefined;
 	if (!wanted || state.doc.length === 0) return [];
@@ -81,7 +87,11 @@ export function stickyHeaders(
 		: visibleLine.from + firstCode;
 	const found: SyntaxNode[] = [];
 	for (let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 1); node; node = node.parent) {
-		if (wanted.has(node.name) && state.doc.lineAt(node.from).number < visibleLine.number) {
+		const declarationLine = state.doc.lineAt(node.from).number;
+		if (wanted.has(node.name) && (
+			declarationLine < visibleLine.number
+			|| (includeVisibleLine && declarationLine === visibleLine.number)
+		)) {
 			found.push(node);
 		}
 	}
@@ -97,47 +107,91 @@ export function stickyHeaders(
 	return headers;
 }
 
+/**
+ * Resolve scopes at the first line that remains visible below the sticky rows.
+ * Adding a nested header covers another editor line, so repeat until the
+ * number of headers—and therefore the probe height—settles.
+ */
+export function stickyHeadersBelowViewport(
+	state: EditorState,
+	languageId: string | null,
+	viewportTop: number,
+	lineHeight: number,
+	positionAtHeight: (height: number) => number,
+): StickyHeader[] {
+	let probeHeight = viewportTop;
+	let headers: StickyHeader[] = [];
+	const seenHeights = new Set<number>();
+	for (let iteration = 0; iteration < 32; iteration++) {
+		seenHeights.add(probeHeight);
+		headers = stickyHeaders(
+			state,
+			positionAtHeight(probeHeight),
+			languageId,
+			probeHeight > viewportTop,
+		);
+		const nextHeight = viewportTop + headers.length * lineHeight;
+		if (nextHeight === probeHeight || seenHeights.has(nextHeight)) break;
+		probeHeight = nextHeight;
+	}
+	return headers;
+}
+
 class StickyScrollView {
 	readonly dom: HTMLElement;
 	private signature = "";
-	private frame: number | null = null;
-	private readonly onScroll = (): void => {
-		if (this.frame !== null) return;
-		this.frame = window.requestAnimationFrame(() => {
-			this.frame = null;
-			this.render();
-		});
-	};
+	private destroyed = false;
+	private readonly onScroll = (): void => this.requestRender();
 
 	constructor(private view: EditorView, private languageId: string | null) {
 		this.dom = this.view.dom.createDiv({ cls: "cm-sticky-scroll" });
 		// The parsed viewport is buffered beyond what is visibly on screen, and
 		// doesn't update for every line crossed while scrolling.
 		this.view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
-		this.render();
+		this.requestRender();
 	}
 
 	update(update: ViewUpdate): void {
 		if (update.transactions.length > 0) this.signature = "";
 		if (update.docChanged || update.viewportChanged || update.geometryChanged || update.transactions.length > 0) {
-			this.render();
+			this.requestRender();
 		}
 	}
 
 	destroy(): void {
+		this.destroyed = true;
 		this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
-		if (this.frame !== null) window.cancelAnimationFrame(this.frame);
 		this.dom.remove();
 	}
 
-	private render(): void {
-		const editorBox = this.view.dom.getBoundingClientRect();
-		const contentBox = this.view.contentDOM.getBoundingClientRect();
-		this.dom.style.paddingLeft = `${Math.max(0, contentBox.left - editorBox.left)}px`;
-		const scrollBox = this.view.scrollDOM.getBoundingClientRect();
-		const heightFromDocumentTop = Math.max(0, scrollBox.top - this.view.documentTop);
-		const visibleFrom = this.view.lineBlockAtHeight(heightFromDocumentTop).from;
-		const headers = stickyHeaders(this.view.state, visibleFrom, this.languageId);
+	private requestRender(): void {
+		this.view.requestMeasure<StickyMeasurement>({
+			key: this,
+			read: () => {
+				if (this.destroyed) return { paddingLeft: 0, headers: [] };
+				const editorBox = this.view.dom.getBoundingClientRect();
+				const contentBox = this.view.contentDOM.getBoundingClientRect();
+				const scrollBox = this.view.scrollDOM.getBoundingClientRect();
+				const heightFromDocumentTop = Math.max(0, scrollBox.top - this.view.documentTop);
+				return {
+					paddingLeft: Math.max(0, contentBox.left - editorBox.left),
+					headers: stickyHeadersBelowViewport(
+						this.view.state,
+						this.languageId,
+						heightFromDocumentTop,
+						this.view.defaultLineHeight,
+						(height) => this.view.lineBlockAtHeight(height).from,
+					),
+				};
+			},
+			write: (measurement) => {
+				if (!this.destroyed) this.render(measurement);
+			},
+		});
+	}
+
+	private render({ paddingLeft, headers }: StickyMeasurement): void {
+		this.dom.style.paddingLeft = `${paddingLeft}px`;
 		const signature = headers.map((header) => `${header.from}:${header.text}`).join("\0");
 		if (signature === this.signature) return;
 		this.signature = signature;

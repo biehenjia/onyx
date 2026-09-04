@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname, sep } from "path";
-import { isUnsafeRoot, resolveProject } from "../../src/lsp/roots";
+import { isUnsafeRoot, resolveProject, VaultMap } from "../../src/lsp/roots";
 
 describe("isUnsafeRoot", () => {
 	const HOME = process.env.HOME ?? "/home/nobody";
@@ -76,5 +76,27 @@ describe("resolveProject", () => {
 
 	it("returns null for a path that does not exist", () => {
 		expect(resolveProject(join(home, "nope", "missing.ts"))).toBeNull();
+	});
+});
+
+describe("VaultMap external symlinks", () => {
+	it("only maps out-of-vault targets after the experimental option is enabled", () => {
+		const root = mkdtempSync(join(tmpdir(), "onyx-vault-map-"));
+		try {
+			const vault = join(root, "vault");
+			const external = join(root, "external");
+			mkdirSync(vault);
+			mkdirSync(external);
+			const file = join(external, "source.ts");
+			writeFileSync(file, "export {}\n");
+			symlinkSync(external, join(vault, "linked-project"));
+
+			const map = new VaultMap(vault, false);
+			expect(map.toVaultPath(file)).toBeNull();
+			map.setExternalLinksEnabled(true);
+			expect(map.toVaultPath(file)).toBe("linked-project/source.ts");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

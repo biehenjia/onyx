@@ -121,15 +121,26 @@ interface VaultLink {
 export class VaultMap {
 	private readonly base: string;
 	private links: VaultLink[] = [];
+	private externalLinksEnabled: boolean;
 
-	constructor(vaultBase: string) {
+	constructor(vaultBase: string, externalLinksEnabled = true) {
 		this.base = vaultBase.endsWith(sep) ? vaultBase : vaultBase + sep;
+		this.externalLinksEnabled = externalLinksEnabled;
+		this.refresh();
+	}
+
+	setExternalLinksEnabled(enabled: boolean): void {
+		this.externalLinksEnabled = enabled;
 		this.refresh();
 	}
 
 	/** Re-scan the vault root for symlinks (call when the link set changes). */
 	refresh(): void {
 		const links: VaultLink[] = [];
+		if (!this.externalLinksEnabled) {
+			this.links = links;
+			return;
+		}
 		try {
 			for (const entry of readdirSync(this.base, { withFileTypes: true })) {
 				if (!entry.isSymbolicLink()) continue;

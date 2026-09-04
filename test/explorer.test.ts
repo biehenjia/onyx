@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isWorkspaceItemVisible } from "../src/explorer";
+import { getMoveDestination, isWorkspaceItemVisible } from "../src/explorer";
 
 describe("workspace explorer visibility", () => {
 	it.each(["node_modules", ".git", ".direnv", ".venv", "target", "dist", "build", "__pycache__"])(
@@ -29,5 +29,32 @@ describe("workspace explorer visibility", () => {
 
 	it("keeps useful dot-directories", () => {
 		expect(isWorkspaceItemVisible(".github", true)).toBe(true);
+	});
+});
+
+describe("workspace explorer moves", () => {
+	it("moves an item into a folder while preserving its name", () => {
+		expect(getMoveDestination("src/main.ts", false, "archive", false))
+			.toEqual({ path: "archive/main.ts" });
+	});
+
+	it("moves an item back to the workspace root", () => {
+		expect(getMoveDestination("src/main.ts", false, "", false))
+			.toEqual({ path: "main.ts" });
+	});
+
+	it("rejects moves into the same parent", () => {
+		expect(getMoveDestination("src/main.ts", false, "src", true))
+			.toEqual({ error: "The item is already in that folder." });
+	});
+
+	it("rejects moving a folder into itself or a descendant", () => {
+		expect(getMoveDestination("src", true, "src", false)).toHaveProperty("error");
+		expect(getMoveDestination("src", true, "src/nested", false)).toHaveProperty("error");
+	});
+
+	it("rejects destination name collisions", () => {
+		expect(getMoveDestination("src/main.ts", false, "archive", true))
+			.toEqual({ error: "An item named “main.ts” already exists in that folder." });
 	});
 });

@@ -21,8 +21,16 @@
 
 	/* chrome */
 	--onyx-cursor: var(--caret-color, var(--text-normal));
-	--onyx-selection: var(--text-selection);
-	--onyx-selection-match: var(--text-highlight-bg);
+	/* Keep highlights translucent even when a theme supplies an opaque
+	 * --text-selection/--text-highlight-bg (some dark themes use white). The
+	 * first declaration is the fallback for older Electron versions; modern
+	 * Obsidian mixes from the active theme accent. */
+	--onyx-selection: rgba(var(--color-accent-rgb), 0.28);
+	--onyx-selection: color-mix(in srgb, var(--interactive-accent) 28%, transparent);
+	--onyx-selection-match: rgba(var(--color-accent-rgb), 0.16);
+	--onyx-selection-match: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+	--onyx-search-selection: rgba(var(--color-accent-rgb), 0.38);
+	--onyx-search-selection: color-mix(in srgb, var(--interactive-accent) 38%, transparent);
 	--onyx-gutter-fg: var(--text-faint);
 	--onyx-gutter-active-fg: var(--text-normal);
 	--onyx-panel-bg: var(--background-secondary);
@@ -84,6 +92,18 @@
 
 .onyx-code-view .cm-editor {
 	height: 100%;
+}
+
+/* Obsidian's editor selection rule is loaded after CodeMirror's generated
+ * theme and can replace it with --text-selection (opaque white in some dark
+ * themes). Keep the override in the plugin stylesheet so our accent wash wins
+ * the cascade. CodeMirror's drawSelection layer sits behind the document, so
+ * syntax colours retain their original contrast. */
+.onyx-code-view.onyx-code-view
+	.cm-editor.cm-focused
+	.cm-selectionBackground,
+.onyx-code-view.onyx-code-view .cm-editor .cm-selectionBackground {
+	background-color: var(--onyx-selection) !important;
 }
 
 .onyx-code-view .cm-scroller {
@@ -163,11 +183,11 @@
 
 /* Obsidian applies its bright active-gutter colour after CodeMirror's injected
  * theme. Override it at the plugin stylesheet layer with the editor's wash. */
-.onyx-code-view
+.onyx-code-view.onyx-code-view
 	.cm-editor
 	.cm-gutters
 	.cm-gutterElement.cm-activeLineGutter {
-	background-color: var(--onyx-active-line) !important;
+	background-color: var(--onyx-active-line);
 }
 
 /* Status bar ---------------------------------------------------------- */
@@ -203,6 +223,67 @@
 .onyx-workspace-explorer-content .nav-files-container {
 	flex: 1 1 auto;
 	overflow: auto;
+	position: relative;
+}
+
+/* Keep the custom view on Obsidian's native explorer surface and state tokens. */
+.onyx-workspace-explorer-content .nav-folder.mod-root {
+	min-height: 100%;
+	position: relative;
+	z-index: 1;
+}
+
+.onyx-workspace-explorer-content .nav-folder.mod-root > .nav-folder-children {
+	margin-inline-start: 0;
+	padding-inline-start: 0;
+}
+
+.onyx-workspace-explorer-content .nav-file-title.is-active {
+	background-color: transparent;
+	color: var(--nav-item-color-active);
+	font-weight: var(--nav-item-weight-active);
+}
+
+/* Nested tree branches constrain their children's layout width. */
+.onyx-workspace-explorer-content .nav-file,
+.onyx-workspace-explorer-content .nav-file-title {
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.onyx-workspace-explorer-content .onyx-workspace-active-highlight {
+	position: absolute;
+	z-index: 0;
+	inset-inline: 0;
+	background-color: var(--nav-item-background-active);
+	pointer-events: none;
+}
+
+.onyx-workspace-explorer-content .tree-item-self:focus-visible {
+	box-shadow: inset 0 0 0 2px var(--background-modifier-border-focus);
+	outline: none;
+}
+
+.onyx-workspace-explorer-content .tree-item-self[draggable="true"] {
+	cursor: grab;
+}
+
+.onyx-workspace-explorer-content .tree-item-self.is-being-dragged {
+	opacity: 0.45;
+}
+
+/* Obsidian adds this state to the native folder container. Some themes scope
+ * their corresponding rule to the core file-explorer view, so retain the same
+ * navigation tokens as a fallback in Onyx's explorer. */
+.onyx-workspace-explorer-content
+	.nav-folder.is-being-dragged-over
+	> .nav-folder-title {
+	background-color: var(--nav-item-background-hover);
+	color: var(--nav-item-color-hover);
+}
+
+.onyx-workspace-explorer-content .nav-files-container.onyx-drop-target {
+	box-shadow: inset 0 0 0 1px var(--interactive-accent);
 }
 
 .onyx-workspace-empty {
@@ -380,7 +461,6 @@
 	line-height: 1;
 	letter-spacing: 0.02em;
 	color: var(--onyx-glyph-color);
-	background-color: var(--background-modifier-hover);
 	background-color: color-mix(
 		in srgb,
 		var(--onyx-glyph-color) 15%,

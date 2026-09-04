@@ -321,6 +321,12 @@ export class DocumentSession {
 		await this.anyView?.save();
 	}
 
+	/** Drop recovery/autosave state after an explicit “Don’t save” choice. */
+	discardPendingChanges(): void {
+		this.cancelScheduledSave();
+		this.clearRecovery(this.path);
+	}
+
 	private recomputeDirty(): void {
 		const next = this.currentText !== this.savedText;
 		if (next === this.dirty) return;

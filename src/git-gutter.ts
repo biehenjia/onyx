@@ -39,10 +39,25 @@ export function diffLines(before: string, after: string): DiffLine[] {
 		}
 	}
 	const lines = new Set([...removedSet, ...addedSet, ...modifiedSet]);
-	return [...lines].sort((x, y) => x - y).map((line) => ({
+	const result: DiffLine[] = [...lines].sort((x, y) => x - y).map((line) => ({
 		line: Math.min(Math.max(1, line), Math.max(1, b.length)),
 		kind: modifiedSet.has(line) ? "modified" : addedSet.has(line) ? "added" : "deleted",
 	}));
+
+	// LCS can anchor on a pre-existing blank line in the middle of an inserted
+	// block. Although technically unchanged, leaving that row unmarked creates a
+	// distracting hole in what is visually one addition (green / blank / green).
+	const byLine = new Map(result.map((change) => [change.line, change]));
+	let line = 2;
+	while (line < b.length) {
+		if (!/^\s*$/.test(b[line - 1]) || byLine.has(line)) { line++; continue; }
+		const start = line;
+		while (line < b.length && /^\s*$/.test(b[line - 1]) && !byLine.has(line)) line++;
+		if (byLine.get(start - 1)?.kind === "added" && byLine.get(line)?.kind === "added") {
+			for (let blank = start; blank < line; blank++) byLine.set(blank, { line: blank, kind: "added" });
+		}
+	}
+	return [...byLine.values()].sort((x, y) => x.line - y.line);
 }
 
 class GitMarker extends GutterMarker {

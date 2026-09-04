@@ -1,6 +1,13 @@
 import { App, Modal, Setting } from "obsidian";
+import type { ButtonComponent } from "obsidian";
 
 export type ConflictChoice = "reload" | "keep";
+
+function markDestructive(button: ButtonComponent): ButtonComponent {
+	const methods = button as unknown as Record<string, unknown>;
+	const apply = (methods["setDestructive"] ?? methods["setWarning"]) as () => ButtonComponent;
+	return apply.call(button);
+}
 
 /**
  * Shown when a file changes on disk (git checkout, formatter, another editor)
@@ -34,11 +41,8 @@ export class ExternalChangeModal extends Modal {
 
 		new Setting(this.contentEl)
 			.addButton((b) =>
-				b
-					// setWarning is deprecated in 1.13 but setDestructive needs
-					// 1.13; Onyx's minAppVersion is 1.5.
+				markDestructive(b)
 					.setButtonText("Reload from disk")
-					.setWarning()
 					.onClick(() => this.resolve("reload")),
 			)
 			.addButton((b) =>

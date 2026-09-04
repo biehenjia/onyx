@@ -7,6 +7,7 @@ import {
 	TFile,
 	TextFileView,
 	WorkspaceLeaf,
+	type OpenViewState,
 } from "obsidian";
 import {
 	Annotation,
@@ -75,6 +76,10 @@ import { SYMBOLS_VIEW, SymbolsPane, type SymbolTarget } from "./symbols";
 import { GitService, type GitFileStatus } from "./git";
 import { gitGutter, setGitBaseline } from "./git-gutter";
 import { RecoveryModal, type RecoverySnapshot } from "./recovery";
+import { DirtyCloseModal } from "./close-confirm";
+import { startLint, type LintIssue } from "./lint";
+import type { ChildProcess } from "child_process";
+import { dirname } from "path";
 
 export const VIEW_TYPE_CODE = "onyx-code-view";
 
@@ -133,13 +138,17 @@ export default class OnyxPlugin extends Plugin {
 	private git: GitService | null = null;
 	private buffers: Record<string, RecoverySnapshot> = {};
 	private recoveryTimers = new Map<string, number>();
+	private lintTimers = new Map<string, number>();
+	private lintProcesses = new Map<string, ChildProcess>();
 
 	async onload() {
 		await this.loadSettings();
 
 		const vaultBase = this.resolveVaultBase();
 		this.git = vaultBase ? new GitService() : null;
-		this.vaultMap = vaultBase ? new VaultMap(vaultBase) : null;
+		this.vaultMap = vaultBase
+			? new VaultMap(vaultBase, this.settings.externalSymlinksEnabled)
+			: null;
 		this.lspRegistry = new LspRegistry(
 			() => this.settings.lspServers,
 			(html, languageId) => {
@@ -168,6 +177,7 @@ export default class OnyxPlugin extends Plugin {
 			WORKSPACE_EXPLORER_VIEW,
 			(leaf) => new WorkspaceExplorerPane(leaf, {
 				newFile: (folder) => this.openNewSourceFileModal(folder),
+				openFile: (file, newLeaf) => this.openWorkspaceFile(file, newLeaf),
 				gitStatus: (root) => this.gitStatusForExplorer(root),
 				isDirty: (path) => this.sessions.get(path)?.dirty ?? false,
 			}),
@@ -178,6 +188,7 @@ export default class OnyxPlugin extends Plugin {
 		);
 		this.claimExtensions();
 		this.registerFileCommands();
+		this.registerLintCommands();
 		this.registerLspCommands();
 		this.addSettingTab(new OnyxSettingTab(this.app, this));
 
@@ -246,6 +257,74 @@ export default class OnyxPlugin extends Plugin {
 		);
 	}
 
+	private registerLintCommands(): void {
+		this.addCommand({
+			id: "lint-current-file",
+			name: "Lint current file",
+			checkCallback: (checking) => {
+				const view = this.app.workspace.getActiveViewOfType(CodeView);
+				if (!view?.file || !this.lintCommandFor(view.file)) return false;
+				if (!checking) void this.lintView(view, true);
+				return true;
+			},
+		});
+	}
+
+	private lintCommandFor(file: TFile): string[] | null {
+		return this.settings.lintCommands[file.name]
+			?? this.settings.lintCommands[file.extension.toLowerCase()]
+			?? this.settings.lintCommands[`.${file.extension.toLowerCase()}`]
+			?? null;
+	}
+
+	scheduleLint(view: CodeView): void {
+		if (this.settings.lintTrigger !== "afterDelay" || !view.file) return;
+		const path = view.file.path;
+		this.lintProcesses.get(path)?.kill();
+		this.lintProcesses.delete(path);
+		const old = this.lintTimers.get(path);
+		if (old !== undefined) window.clearTimeout(old);
+		this.lintTimers.set(path, window.setTimeout(() => {
+			this.lintTimers.delete(path);
+			void this.lintView(view, false);
+		}, Math.max(250, this.settings.lintDelayMs)));
+	}
+
+	async lintView(view: CodeView, showNotices: boolean): Promise<void> {
+		const file = view.file;
+		if (!file) return;
+		const command = this.lintCommandFor(file);
+		if (!command) {
+			if (showNotices) new Notice(`No lint command configured for ${file.name}.`);
+			return;
+		}
+		try {
+			if (this.sessions.get(file.path)?.dirty) await view.save();
+		} catch {
+			if (showNotices) new Notice("Could not save the file before linting.");
+			return;
+		}
+		const adapter = this.app.vault.adapter;
+		if (!(adapter instanceof FileSystemAdapter)) {
+			if (showNotices) new Notice("External lint commands require a desktop filesystem vault.");
+			return;
+		}
+		this.lintProcesses.get(file.path)?.kill();
+		const fullPath = adapter.getFullPath(file.path);
+		const workspace = resolveProject(fullPath)?.realRoot ?? dirname(fullPath);
+		const process = startLint(command, fullPath, workspace, (error, issues) => {
+			if (this.lintProcesses.get(file.path) !== process) return;
+			this.lintProcesses.delete(file.path);
+			if (error) {
+				if (showNotices) new Notice(`Could not run linter: ${error.message}`);
+				return;
+			}
+			view.showLintIssues(issues);
+			if (showNotices) new Notice(issues.length === 0 ? "No lint issues found." : `${issues.length} lint issue${issues.length === 1 ? "" : "s"}.`);
+		});
+		if (process) this.lintProcesses.set(file.path, process);
+	}
+
 	private async openSymbols(): Promise<void> {
 		let leaf = this.app.workspace.getLeavesOfType(SYMBOLS_VIEW)[0];
 		if (!leaf) {
@@ -301,12 +380,39 @@ export default class OnyxPlugin extends Plugin {
 		return file;
 	}
 
+	/** Open explorer files in an editor leaf, independent of sidebar focus timing. */
+	private async openWorkspaceFile(file: TFile, newLeaf: boolean): Promise<void> {
+		const codeLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_CODE);
+		const activeView = this.app.workspace.getActiveViewOfType(CodeView);
+		const leaf = newLeaf
+			? this.app.workspace.getLeaf("tab")
+			: codeLeaves.find((candidate) => candidate.view === activeView)
+				?? codeLeaves.find((candidate) => candidate.view === this.lastCodeView)
+				?? codeLeaves[0]
+				?? this.app.workspace.getLeaf("tab");
+		if (this.app.vault.getAbstractFileByPath(file.path) instanceof TFile) {
+			await leaf.openFile(file);
+		} else {
+			// Hidden dotfiles discovered through DataAdapter have no entry for
+			// WorkspaceLeaf.openFile to resolve. Mount the same CodeView directly
+			// and let TextFileView load the adapter-backed TFile bridge.
+			const view = new CodeView(leaf, this);
+			await leaf.open(view);
+			await view.onLoadFile(file);
+		}
+		this.app.workspace.setActiveLeaf(leaf, { focus: true });
+	}
+
 	onunload() {
 		if (this.symbolsRefreshTimer !== null) {
 			window.clearTimeout(this.symbolsRefreshTimer);
 		}
 		for (const timer of this.recoveryTimers.values()) window.clearTimeout(timer);
 		this.recoveryTimers.clear();
+		for (const timer of this.lintTimers.values()) window.clearTimeout(timer);
+		this.lintTimers.clear();
+		for (const process of this.lintProcesses.values()) process.kill();
+		this.lintProcesses.clear();
 		for (const session of this.sessions.values()) session.saveNow();
 		this.sessions.clear();
 		this.lspRegistry.disposeAll();
@@ -545,6 +651,11 @@ export default class OnyxPlugin extends Plugin {
 		await this.savePluginData();
 	}
 
+	applyIntegrationSettings(): void {
+		this.vaultMap?.setExternalLinksEnabled(this.settings.externalSymlinksEnabled);
+		this.updateStatusBar();
+	}
+
 	private async savePluginData(): Promise<void> {
 		await this.saveData({ version: 1, settings: this.settings, buffers: this.buffers } satisfies PluginData);
 	}
@@ -590,13 +701,13 @@ export default class OnyxPlugin extends Plugin {
 
 	async gitHeadText(path: string): Promise<string | null> {
 		const adapter = this.app.vault.adapter;
-		return this.git && adapter instanceof FileSystemAdapter
+		return this.settings.gitEnabled && this.git && adapter instanceof FileSystemAdapter
 			? this.git.headText(adapter.getFullPath(path)) : null;
 	}
 
 	private async gitStatusForExplorer(rootPath: string): Promise<Map<string, GitFileStatus>> {
 		const adapter = this.app.vault.adapter;
-		if (!this.git || !(adapter instanceof FileSystemAdapter)) return new Map();
+		if (!this.settings.gitEnabled || !this.git || !(adapter instanceof FileSystemAdapter)) return new Map();
 		const result = await this.git.statusFor(resolve(adapter.getFullPath(rootPath), ".onyx-status-anchor"));
 		if (!result || !this.vaultMap) return new Map();
 		const statuses = new Map<string, GitFileStatus>();
@@ -613,6 +724,11 @@ export class CodeView extends TextFileView {
 	private session: DocumentSession | null = null;
 	private readonly styleCompartment = new Compartment();
 	private readonly lspCompartment = new Compartment();
+	private originalLeafDetach: (() => void) | null = null;
+	private originalLeafOpenFile: ((file: TFile, openState?: OpenViewState) => Promise<void>) | null = null;
+	private closeApproved = false;
+	private closePromptOpen = false;
+	private discardOnClose = false;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -703,6 +819,22 @@ export class CodeView extends TextFileView {
 		});
 	}
 
+	showLintIssues(issues: readonly LintIssue[]): void {
+		if (!this.editor) return;
+		const doc = this.editor.state.doc;
+		const diagnostics: Diagnostic[] = issues.map((issue) => {
+			const line = doc.line(Math.min(doc.lines, Math.max(1, issue.line)));
+			const from = Math.min(line.to, line.from + Math.max(0, issue.column - 1));
+			const endLine = issue.endLine
+				? doc.line(Math.min(doc.lines, Math.max(1, issue.endLine)))
+				: line;
+			const to = Math.max(from, Math.min(endLine.to, endLine.from + Math.max(0, (issue.endColumn ?? issue.column) - 1)));
+			return { from, to, severity: issue.severity, message: issue.message, source: issue.source };
+		});
+		this.editor.dispatch(setDiagnostics(this.editor.state, diagnostics));
+		this.session?.mirrorDiagnostics(this, diagnostics);
+	}
+
 	/**
 	 * Swap the language-server plugin for this view. Called by the session for
 	 * every attached view — the multi-view workspace reference-counts
@@ -743,18 +875,110 @@ export class CodeView extends TextFileView {
 			state: this.buildState(this.data ?? ""),
 			parent: this.contentEl,
 		});
+		this.installCloseGuard();
+	}
+
+	private installCloseGuard(): void {
+		if (this.originalLeafDetach) return;
+		const leaf = this.leaf;
+		this.originalLeafDetach = leaf.detach.bind(leaf);
+		this.originalLeafOpenFile = leaf.openFile.bind(leaf);
+		leaf.detach = () => this.requestClose();
+		leaf.openFile = (file, openState) => this.requestFileSwitch(file, openState);
+	}
+
+	private requestFileSwitch(file: TFile, openState?: OpenViewState): Promise<void> {
+		if (file.path === this.file?.path || !this.session?.dirty || this.session.size > 1) {
+			return this.originalLeafOpenFile?.(file, openState) ?? Promise.resolve();
+		}
+		if (this.closePromptOpen) return Promise.resolve();
+		this.closePromptOpen = true;
+		return new Promise((resolveOpen) => {
+			new DirtyCloseModal(this.app, this.file?.name ?? this.getDisplayText(), (choice) => {
+				this.closePromptOpen = false;
+				if (choice === "cancel") {
+					resolveOpen();
+					return;
+				}
+				void this.finishConfirmedSwitch(file, openState, choice === "discard")
+					.finally(resolveOpen);
+			}, "switching").open();
+		});
+	}
+
+	private async finishConfirmedSwitch(
+		file: TFile,
+		openState: OpenViewState | undefined,
+		discard: boolean,
+	): Promise<void> {
+		if (!this.session) return;
+		if (discard) {
+			this.discardOnClose = true;
+			this.session.discardPendingChanges();
+		} else {
+			try {
+				await this.session.flush();
+			} catch (error) {
+				console.error("Onyx: could not save before switching files:", error);
+				new Notice("Could not save changes; the current file was left open.");
+				return;
+			}
+		}
+		await this.originalLeafOpenFile?.(file, openState);
+	}
+
+	private requestClose(): void {
+		if (this.closeApproved || !this.session?.dirty || this.session.size > 1) {
+			this.originalLeafDetach?.();
+			return;
+		}
+		if (this.closePromptOpen) return;
+		this.closePromptOpen = true;
+		new DirtyCloseModal(this.app, this.file?.name ?? this.getDisplayText(), (choice) => {
+			this.closePromptOpen = false;
+			if (choice === "cancel") return;
+			void this.finishConfirmedClose(choice === "discard");
+		}).open();
+	}
+
+	private async finishConfirmedClose(discard: boolean): Promise<void> {
+		if (!this.session) return;
+		if (discard) {
+			this.discardOnClose = true;
+			this.session.discardPendingChanges();
+		} else {
+			try {
+				await this.session.flush();
+			} catch (error) {
+				console.error("Onyx: could not save before closing:", error);
+				new Notice("Could not save changes; the tab was left open.");
+				return;
+			}
+		}
+		this.closeApproved = true;
+		this.originalLeafDetach?.();
 	}
 
 	async onClose(): Promise<void> {
+		if (this.originalLeafDetach) {
+			this.leaf.detach = this.originalLeafDetach;
+			this.originalLeafDetach = null;
+		}
+		if (this.originalLeafOpenFile) {
+			this.leaf.openFile = this.originalLeafOpenFile;
+			this.originalLeafOpenFile = null;
+		}
 		// Obsidian usually runs onUnloadFile before onClose on leaf close, but
 		// it isn't guaranteed. Tear the session down here too; detach() and
 		// releaseSession() are both idempotent, so the normal double call is a
 		// no-op and a missed onUnloadFile no longer leaks a session + server.
 		if (this.session && this.file) {
-			try {
-				await this.session.flush();
-			} catch {
-				/* best effort while the leaf is going away */
+			if (!this.discardOnClose) {
+				try {
+					await this.session.flush();
+				} catch {
+					/* best effort while the leaf is going away */
+				}
 			}
 			this.session.detach(this);
 			this.plugin.releaseSession(this.file.path);
@@ -788,8 +1012,10 @@ export class CodeView extends TextFileView {
 	}
 
 	async onUnloadFile(file: TFile): Promise<void> {
+		const discard = this.discardOnClose;
+		this.discardOnClose = false;
 		if (this.session) {
-			await this.session.flush();
+			if (!discard) await this.session.flush();
 			this.session.detach(this);
 			this.plugin.releaseSession(file.path);
 			this.session = null;
@@ -798,8 +1024,14 @@ export class CodeView extends TextFileView {
 	}
 
 	async save(clear?: boolean): Promise<void> {
-		await super.save(clear);
+		const file = this.file;
+		if (file && !(this.app.vault.getAbstractFileByPath(file.path) instanceof TFile)) {
+			await this.app.vault.adapter.write(file.path, this.getViewData());
+		} else {
+			await super.save(clear);
+		}
 		this.session?.markSaved();
+		if (this.plugin.settings.lintTrigger === "onSave") void this.plugin.lintView(this, false);
 	}
 
 	refreshDirtyIndicator(): void {
@@ -928,6 +1160,7 @@ export class CodeView extends TextFileView {
 				if (mirrored) return;
 
 				this.session?.handleLocalChange(this, update.changes);
+				this.plugin.scheduleLint(this);
 			}),
 			EditorView.domEventHandlers({
 				blur: () => this.session?.notifyBlur(),

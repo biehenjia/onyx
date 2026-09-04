@@ -55,6 +55,7 @@ function makeSession(
 		binding?: LspBinding;
 		delayMs?: number;
 		prompt?: ConflictPrompt;
+		clearRecovery?: (path: string) => void;
 	} = {},
 ) {
 	const onDirtyChange = vi.fn();
@@ -66,6 +67,8 @@ function makeSession(
 		opts.binding ?? null,
 		() => opts.delayMs ?? 2000,
 		opts.prompt,
+		undefined,
+		opts.clearRecovery,
 	);
 	return { session, onDirtyChange };
 }
@@ -143,6 +146,22 @@ describe("DocumentSession — multi-view LSP binding", () => {
 });
 
 describe("DocumentSession — mirroring & dirty state", () => {
+	it("cancels autosave and recovery after an explicit discard", () => {
+		const clearRecovery = vi.fn();
+		const { session } = makeSession("a", {
+			policy: "afterDelay",
+			delayMs: 10,
+			clearRecovery,
+		});
+		const view = fakeView("a");
+		session.attach(asView(view));
+		view._text = "changed";
+		session.handleLocalChange(asView(view), ChangeSet.empty(1));
+
+		session.discardPendingChanges();
+		expect(clearRecovery).toHaveBeenCalledWith("proj/a.ts");
+	});
+
 	it("mirrors a local edit to peers but not the origin", () => {
 		const { session } = makeSession("a");
 		const v1 = fakeView("a");

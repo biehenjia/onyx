@@ -1,7 +1,14 @@
 import { App, Modal, Setting } from "obsidian";
+import type { ButtonComponent } from "obsidian";
 
 export interface RecoverySnapshot { text: string; diskText: string; updatedAt: number }
 export type RecoveryChoice = "restore" | "disk";
+
+function markDestructive(button: ButtonComponent): ButtonComponent {
+	const methods = button as unknown as Record<string, unknown>;
+	const apply = (methods["setDestructive"] ?? methods["setWarning"]) as () => ButtonComponent;
+	return apply.call(button);
+}
 
 export class RecoveryModal extends Modal {
 	private done = false;
@@ -13,7 +20,7 @@ export class RecoveryModal extends Modal {
 			? `Onyx recovered an unsaved buffer for “${this.fileName}”, but the file also changed on disk.`
 			: `Onyx recovered unsaved edits for “${this.fileName}”.` });
 		new Setting(this.contentEl)
-			.addButton((b) => b.setButtonText("Use disk version").setWarning().onClick(() => this.resolve("disk")))
+			.addButton((b) => markDestructive(b).setButtonText("Use disk version").onClick(() => this.resolve("disk")))
 			.addButton((b) => b.setButtonText("Restore buffer").setCta().onClick(() => this.resolve("restore")));
 	}
 	onClose(): void { this.contentEl.empty(); if (!this.done) { this.done = true; this.resolveChoice("restore"); } }

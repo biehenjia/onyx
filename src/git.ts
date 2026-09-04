@@ -2,7 +2,7 @@ import { execFile } from "child_process";
 import { realpathSync } from "fs";
 import { dirname, relative, resolve, sep } from "path";
 
-export type GitFileStatus = "modified" | "added" | "deleted" | "renamed" | "untracked" | "conflicted";
+export type GitFileStatus = "modified" | "added" | "deleted" | "renamed" | "untracked" | "conflicted" | "ignored";
 
 function runGit(cwd: string, args: string[]): Promise<string> {
 	return new Promise((resolveRun, reject) => {
@@ -21,6 +21,10 @@ export function parseGitStatus(output: string): Map<string, GitFileStatus> {
 		if (!entry) continue;
 		if (entry.startsWith("? ")) {
 			result.set(entry.slice(2), "untracked");
+			continue;
+		}
+		if (entry.startsWith("! ")) {
+			result.set(entry.slice(2).replace(/\/$/, ""), "ignored");
 			continue;
 		}
 		if (entry.startsWith("u ")) {
@@ -84,7 +88,7 @@ export class GitService {
 		const root = await this.rootFor(fullPath);
 		if (!root) return null;
 		try {
-			return { root, files: parseGitStatus(await runGit(root, ["status", "--porcelain=v2", "-z", "--untracked-files=all"])) };
+			return { root, files: parseGitStatus(await runGit(root, ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching"])) };
 		} catch {
 			return null;
 		}
