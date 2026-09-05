@@ -10,7 +10,6 @@ import {
 	type OpenViewState,
 } from "obsidian";
 import {
-	Annotation,
 	ChangeSet,
 	Compartment,
 	EditorState,
@@ -35,6 +34,7 @@ import {
 } from "@codemirror/commands";
 import {
 	bracketMatching,
+	indentUnit,
 	indentOnInput,
 	foldGutter,
 	foldKeymap,
@@ -47,6 +47,7 @@ import {
 } from "@codemirror/autocomplete";
 import {
 	Diagnostic,
+	forEachDiagnostic,
 	lintGutter,
 	setDiagnostics,
 	setDiagnosticsEffect,
@@ -66,13 +67,21 @@ import { DocumentSession, LspBinding } from "./session";
 import { ExternalChangeModal } from "./conflict";
 import { languageIdForExtension } from "./lsp/ids";
 import { resolveProject, VaultMap } from "./lsp/roots";
+import { resolveLspSetup, type LspSetup } from "./lsp/setup";
+import { LspTrustModal } from "./lsp/trust";
 import { LspRegistry, ServerState } from "./lsp/registry";
 import { ObsidianWorkspace, OpenMode } from "./lsp/workspace";
 import { DEFAULT_SETTINGS, OnyxSettings, OnyxSettingTab } from "./settings";
 import { NewSourceFileModal, parentPath } from "./new-file";
-import { WORKSPACE_EXPLORER_VIEW, WorkspaceExplorerPane } from "./explorer";
+import {
+	WORKSPACE_EXPLORER_VIEW,
+	WorkspaceExplorerPane,
+	workspaceRootForPath,
+	workspaceRootPaths,
+} from "./explorer";
 import { stickyScroll } from "./sticky-scroll";
 import { SYMBOLS_VIEW, SymbolsPane, type SymbolTarget } from "./symbols";
+import { currentFunction, scopeChain } from "./outline";
 import { GitService, type GitFileStatus } from "./git";
 import { gitGutter, setGitBaseline } from "./git-gutter";
 import { RecoveryModal, type RecoverySnapshot } from "./recovery";
@@ -80,13 +89,15 @@ import { DirtyCloseModal } from "./close-confirm";
 import { startLint, type LintIssue } from "./lint";
 import type { ChildProcess } from "child_process";
 import { dirname } from "path";
+import { mirroredEdit, VIEW_TYPE_CODE } from "./editor/contracts";
 
-export const VIEW_TYPE_CODE = "onyx-code-view";
+export { mirroredEdit, VIEW_TYPE_CODE } from "./editor/contracts";
 
 interface PluginData {
 	version: 1;
 	settings: OnyxSettings;
 	buffers: Record<string, RecoverySnapshot>;
+	trustedProjects: Record<string, string>;
 }
 
 /**
@@ -95,8 +106,6 @@ interface PluginData {
  * no further and doesn't re-trigger a save. Also consumed by the multi-view
  * `ObsidianWorkspace` for server-authored edits.
  */
-export const mirroredEdit = Annotation.define<boolean>();
-
 /**
  * Extensions Onyx claims from Obsidian's default text handling. `md` is
  * intentionally absent — Obsidian owns it and `registerExtensions` cannot
@@ -140,6 +149,7 @@ export default class OnyxPlugin extends Plugin {
 	private recoveryTimers = new Map<string, number>();
 	private lintTimers = new Map<string, number>();
 	private lintProcesses = new Map<string, ChildProcess>();
+	private trustedProjects: Record<string, string> = {};
 
 	async onload() {
 		await this.loadSettings();
@@ -150,7 +160,6 @@ export default class OnyxPlugin extends Plugin {
 			? new VaultMap(vaultBase, this.settings.externalSymlinksEnabled)
 			: null;
 		this.lspRegistry = new LspRegistry(
-			() => this.settings.lspServers,
 			(html, languageId) => {
 				const host = createDiv();
 				host.append(sanitizeHTMLToDom(html));
@@ -180,6 +189,8 @@ export default class OnyxPlugin extends Plugin {
 				openFile: (file, newLeaf) => this.openWorkspaceFile(file, newLeaf),
 				gitStatus: (root) => this.gitStatusForExplorer(root),
 				isDirty: (path) => this.sessions.get(path)?.dirty ?? false,
+				workspacePaths: () => this.settings.workspacePaths,
+				addWorkspace: (path) => this.addWorkspace(path),
 			}),
 		);
 		this.registerView(
@@ -213,7 +224,11 @@ export default class OnyxPlugin extends Plugin {
 		const view = this.app.workspace.getActiveViewOfType(CodeView) ?? this.lastCodeView;
 		const editor = view?.lspEditorView ?? null;
 		return editor && view?.file
-			? { editor, fileName: view.file.name }
+			? {
+				editor,
+				fileName: view.file.name,
+				languageId: languageIdForExtension(view.file.extension),
+			}
 			: null;
 	}
 
@@ -248,7 +263,7 @@ export default class OnyxPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "open-symbols",
-			name: "Open symbols",
+			name: "Open function outline",
 			callback: () => void this.openSymbols(),
 		});
 		this.addRibbonIcon("file-plus", "Create new source file", open);
@@ -347,7 +362,10 @@ export default class OnyxPlugin extends Plugin {
 		let leaf = this.app.workspace.getLeavesOfType(WORKSPACE_EXPLORER_VIEW)[0];
 		if (!leaf) {
 			leaf = this.app.workspace.getLeftLeaf(false) ?? this.app.workspace.getLeaf("tab");
-			const rootPath = parentPath(this.app.workspace.getActiveFile()?.path);
+			const rootPath = workspaceRootForPath(
+				this.app.workspace.getActiveFile()?.path,
+				this.settings.workspacePaths,
+			);
 			await leaf.setViewState({
 				type: WORKSPACE_EXPLORER_VIEW,
 				active: true,
@@ -355,6 +373,15 @@ export default class OnyxPlugin extends Plugin {
 			});
 		}
 		this.app.workspace.setActiveLeaf(leaf, { focus: true });
+	}
+
+	private async addWorkspace(path: string): Promise<void> {
+		if (!workspaceRootPaths(this.app.vault.getFiles()).includes(path)) {
+			throw new Error("A workspace must contain a top-level onyx.toml.");
+		}
+		if (this.settings.workspacePaths.includes(path)) return;
+		this.settings.workspacePaths = [...this.settings.workspacePaths, path];
+		await this.saveSettings();
 	}
 
 	private async createSourceFile(path: string): Promise<TFile> {
@@ -384,12 +411,18 @@ export default class OnyxPlugin extends Plugin {
 	private async openWorkspaceFile(file: TFile, newLeaf: boolean): Promise<void> {
 		const codeLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_CODE);
 		const activeView = this.app.workspace.getActiveViewOfType(CodeView);
+		// getLeaf(false) preserves Obsidian's current navigable target. In
+		// particular, it returns a selected empty "New tab", which should be
+		// consumed before we fall back to an existing Onyx editor.
+		const navigableLeaf = this.app.workspace.getLeaf(false);
 		const leaf = newLeaf
 			? this.app.workspace.getLeaf("tab")
-			: codeLeaves.find((candidate) => candidate.view === activeView)
+			: navigableLeaf.view.getViewType() === "empty"
+				? navigableLeaf
+				: codeLeaves.find((candidate) => candidate.view === activeView)
 				?? codeLeaves.find((candidate) => candidate.view === this.lastCodeView)
 				?? codeLeaves[0]
-				?? this.app.workspace.getLeaf("tab");
+				?? navigableLeaf;
 		if (this.app.vault.getAbstractFileByPath(file.path) instanceof TFile) {
 			await leaf.openFile(file);
 		} else {
@@ -477,7 +510,7 @@ export default class OnyxPlugin extends Plugin {
 		const languageId = languageIdForExtension(path.split(".").pop());
 		if (!languageId) return null;
 
-		const proj = resolveProject(adapter.getFullPath(path));
+		const proj = resolveLspSetup(adapter.getFullPath(path), languageId);
 		if (!proj) return null;
 
 		return {
@@ -485,11 +518,14 @@ export default class OnyxPlugin extends Plugin {
 			languageId,
 			realRoot: proj.realRoot,
 			acquire: () =>
-				this.lspRegistry.acquire(
+				this.trustedProjects[proj.configPath] === proj.fingerprint
+					? this.lspRegistry.acquire(
 					proj.realRoot,
 					proj.rootUri,
 					languageId,
-				),
+					proj.command,
+					)
+					: null,
 			current: () =>
 				this.lspRegistry.clientFor(proj.realRoot, languageId),
 			release: () =>
@@ -528,6 +564,25 @@ export default class OnyxPlugin extends Plugin {
 	}
 
 	private registerLspCommands(): void {
+		this.addCommand({
+			id: "trust-current-project-lsp",
+			name: "Trust current project's language server",
+			checkCallback: (checking): boolean => {
+				const setup = this.currentLspSetup();
+				if (!setup || this.trustedProjects[setup.configPath] === setup.fingerprint) return false;
+				if (!checking) new LspTrustModal(this.app, setup, () => {
+					this.trustedProjects[setup.configPath] = setup.fingerprint;
+					void this.savePluginData();
+					const view = this.app.workspace.getActiveViewOfType(CodeView);
+					if (view?.file) {
+						this.sessions.get(view.file.path)?.replaceLspBinding(
+							this.lspBindingFor(view.file.path),
+						);
+					}
+				}).open();
+				return true;
+			},
+		});
 		const run = (mode: OpenMode) => (checking: boolean): boolean => {
 			const view = this.app.workspace.getActiveViewOfType(CodeView);
 			const editor = view?.lspEditorView ?? null;
@@ -572,6 +627,14 @@ export default class OnyxPlugin extends Plugin {
 		});
 	}
 
+	private currentLspSetup(): LspSetup | null {
+		const file = this.app.workspace.getActiveViewOfType(CodeView)?.file;
+		const adapter = this.app.vault.adapter;
+		if (!file || !(adapter instanceof FileSystemAdapter)) return null;
+		const languageId = languageIdForExtension(file.extension);
+		return languageId ? resolveLspSetup(adapter.getFullPath(file.path), languageId) : null;
+	}
+
 	/**
 	 * React to a server lifecycle change: tell the user once when a server is
 	 * missing or has crashed, and re-bind open sessions when one comes up.
@@ -603,22 +666,66 @@ export default class OnyxPlugin extends Plugin {
 	updateLspStatusBar(): void {
 		if (!this.lspStatusBar) return;
 		const view = this.app.workspace.getActiveViewOfType(CodeView);
+		if (!view?.file) {
+			this.lspStatusBar.setText("");
+			this.lspStatusBar.removeClass("mod-warning");
+			return;
+		}
+		if (!this.settings.lspEnabled) {
+			this.lspStatusBar.setText("Language server off");
+			this.lspStatusBar.removeClass("mod-warning");
+			return;
+		}
+		const setup = this.currentLspSetup();
+		if (setup && this.trustedProjects[setup.configPath] !== setup.fingerprint) {
+			this.lspStatusBar.setText(`LSP ${setup.languageId}: trust required`);
+			this.lspStatusBar.addClass("mod-warning");
+			return;
+		}
 		const target = view?.file
 			? this.sessions.get(view.file.path)?.lspTarget
 			: undefined;
+		if (!target) {
+			const languageId = languageIdForExtension(view.file.extension);
+			this.lspStatusBar.setText(languageId ? "LSP unavailable" : "LSP unsupported");
+			this.lspStatusBar.toggleClass("mod-warning", !!languageId);
+			return;
+		}
 		const state = target
 			? this.serverStates.get(
 					LspRegistry.keyFor(target.realRoot, target.languageId),
 				)
 			: undefined;
 
-		let text = "";
-		if (state?.status === "starting") text = "◌ LSP starting";
-		else if (state?.status === "crashed") text = "⚠ LSP crashed";
+		let text: string;
+		if (state?.status === "starting") text = `◌ LSP ${target.languageId}: starting`;
+		else if (state?.status === "crashed") text = `⚠ LSP ${target.languageId}: crashed`;
+		else if (state?.status === "absent") text = `⚠ LSP ${target.languageId}: unavailable`;
+		else if (state?.status === "running") {
+			let errors = 0;
+			let warnings = 0;
+			let other = 0;
+			const editor = view.lspEditorView;
+			if (editor) {
+				forEachDiagnostic(editor.state, (diagnostic) => {
+					if (diagnostic.severity === "error") errors++;
+					else if (diagnostic.severity === "warning") warnings++;
+					else other++;
+				});
+			}
+			const counts = [
+				errors ? `${errors} error${errors === 1 ? "" : "s"}` : "",
+				warnings ? `${warnings} warning${warnings === 1 ? "" : "s"}` : "",
+				other ? `${other} info` : "",
+			].filter(Boolean).join(", ");
+			text = `LSP ${target.languageId}: ${counts || "ready"}`;
+		} else {
+			text = `LSP ${target.languageId}: connecting`;
+		}
 		this.lspStatusBar.setText(text);
 		this.lspStatusBar.toggleClass(
 			"mod-warning",
-			state?.status === "crashed",
+			state?.status === "crashed" || state?.status === "absent",
 		);
 	}
 
@@ -645,6 +752,7 @@ export default class OnyxPlugin extends Plugin {
 		const data: Partial<PluginData> | null = raw && "settings" in raw ? raw : null;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data?.settings ?? raw);
 		this.buffers = data?.buffers ?? {};
+		this.trustedProjects = data?.trustedProjects ?? {};
 	}
 
 	async saveSettings() {
@@ -657,7 +765,7 @@ export default class OnyxPlugin extends Plugin {
 	}
 
 	private async savePluginData(): Promise<void> {
-		await this.saveData({ version: 1, settings: this.settings, buffers: this.buffers } satisfies PluginData);
+		await this.saveData({ version: 1, settings: this.settings, buffers: this.buffers, trustedProjects: this.trustedProjects } satisfies PluginData);
 	}
 
 	private scheduleRecovery(path: string, text: string, diskText: string): void {
@@ -729,6 +837,7 @@ export class CodeView extends TextFileView {
 	private closeApproved = false;
 	private closePromptOpen = false;
 	private discardOnClose = false;
+	private tabHeaderEl: HTMLElement | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -870,12 +979,88 @@ export class CodeView extends TextFileView {
 
 	async onOpen(): Promise<void> {
 		this.contentEl.addClass("onyx-code-view");
+		// Obsidian does not expose the tab header on WorkspaceLeaf's public type,
+		// but it is the stable element used by the desktop tab UI. Keep the
+		// internal access isolated here and gracefully degrade on mobile.
+		this.tabHeaderEl = (this.leaf as WorkspaceLeaf & {
+			tabHeaderEl?: HTMLElement;
+		}).tabHeaderEl ?? null;
 		this.applyFontVars();
 		this.editor = new EditorView({
 			state: this.buildState(this.data ?? ""),
 			parent: this.contentEl,
 		});
+		this.updateTabBreadcrumb();
+		this.updateNavigationBreadcrumb();
 		this.installCloseGuard();
+	}
+
+	/** Keep the compact current-function context in the editor's tab title. */
+	private updateTabBreadcrumb(): void {
+		const editor = this.editor;
+		const titleEl = this.tabHeaderEl?.querySelector<HTMLElement>(
+			".workspace-tab-header-inner-title",
+		);
+		if (!editor || !titleEl) return;
+
+		const selected = currentFunction(
+			editor.state,
+			editor.state.selection.main.head,
+			this.stickyLanguageId(),
+		);
+		const existing = titleEl.querySelector<HTMLElement>(".onyx-tab-function");
+		if (!selected) {
+			existing?.remove();
+			return;
+		}
+		const crumb = existing ?? titleEl.createSpan({ cls: "onyx-tab-function" });
+		crumb.textContent = ` › ${selected.name}`;
+		crumb.title = selected.name;
+	}
+
+	/** Add the current arbitrary scope chain to Obsidian's in-pane file breadcrumbs. */
+	private updateNavigationBreadcrumb(): void {
+		const editor = this.editor;
+		const titleContainer = this.containerEl.querySelector<HTMLElement>(
+			".view-header-title-container",
+		);
+		const fileTitle = titleContainer?.querySelector<HTMLElement>(
+			".view-header-title",
+		);
+		if (!editor || !titleContainer || !fileTitle) return;
+
+		const scopes = scopeChain(
+			editor.state,
+			editor.state.selection.main.head,
+			this.stickyLanguageId(),
+		);
+		const existing = titleContainer.querySelector<HTMLElement>(".onyx-scope-breadcrumbs");
+		if (scopes.length === 0) {
+			existing?.remove();
+			return;
+		}
+
+		const crumbs = existing ?? titleContainer.createSpan({ cls: "onyx-scope-breadcrumbs" });
+		// Obsidian keeps the folder breadcrumb and file title as siblings. Insert
+		// after the latter so scopes read as an extension of the file path.
+		fileTitle.insertAdjacentElement("afterend", crumbs);
+		crumbs.empty();
+		for (const scope of scopes) {
+			crumbs.createSpan({ cls: "onyx-scope-separator", text: "›" });
+			const crumb = crumbs.createEl("button", {
+				cls: "view-header-breadcrumb onyx-scope-breadcrumb",
+				text: scope.name,
+			});
+			crumb.type = "button";
+			crumb.title = `Jump to ${scope.kind} ${scope.name}`;
+			crumb.addEventListener("click", () => {
+				editor.dispatch({
+					selection: { anchor: scope.from },
+					effects: EditorView.scrollIntoView(scope.from, { y: "center" }),
+				});
+				editor.focus();
+			});
+		}
 	}
 
 	private installCloseGuard(): void {
@@ -960,6 +1145,10 @@ export class CodeView extends TextFileView {
 	}
 
 	async onClose(): Promise<void> {
+		this.containerEl.querySelector(".onyx-scope-breadcrumbs")?.remove();
+		this.tabHeaderEl?.querySelector(".onyx-tab-function")?.remove();
+		this.tabHeaderEl?.removeClass("onyx-tab-dirty");
+		this.tabHeaderEl = null;
 		if (this.originalLeafDetach) {
 			this.leaf.detach = this.originalLeafDetach;
 			this.originalLeafDetach = null;
@@ -1009,6 +1198,8 @@ export class CodeView extends TextFileView {
 		this.refreshGitBaseline();
 
 		this.refreshDirtyIndicator();
+		this.updateTabBreadcrumb();
+		this.updateNavigationBreadcrumb();
 	}
 
 	async onUnloadFile(file: TFile): Promise<void> {
@@ -1035,6 +1226,7 @@ export class CodeView extends TextFileView {
 	}
 
 	refreshDirtyIndicator(): void {
+		this.tabHeaderEl?.toggleClass("onyx-tab-dirty", this.session?.dirty ?? false);
 		this.plugin.updateStatusBar();
 	}
 
@@ -1090,6 +1282,8 @@ export class CodeView extends TextFileView {
 
 	private styleExtensions(): Extension[] {
 		return [
+			EditorState.tabSize.of(this.plugin.settings.tabSize),
+			indentUnit.of(" ".repeat(this.plugin.settings.tabSize)),
 			...editorStyle(this.plugin.settings),
 			...(this.plugin.settings.stickyScroll
 				? [stickyScroll(this.stickyLanguageId())]
@@ -1136,23 +1330,31 @@ export class CodeView extends TextFileView {
 				indentWithTab,
 			]),
 			EditorView.updateListener.of((update) => {
+				if (update.docChanged || update.selectionSet) {
+					this.updateTabBreadcrumb();
+					this.updateNavigationBreadcrumb();
+				}
+				let diagnosticsChanged = false;
 				// Server-published diagnostics land on the workspace's elected
 				// view only — mirror them so every pane shows the underlines.
 				for (const tr of update.transactions) {
-					if (tr.annotation(mirroredEdit)) continue;
 					for (const effect of tr.effects) {
 						if (effect.is(setDiagnosticsEffect)) {
-							this.session?.mirrorDiagnostics(
-								this,
-								effect.value,
-							);
+							diagnosticsChanged = true;
+							if (!tr.annotation(mirroredEdit)) {
+								this.session?.mirrorDiagnostics(
+									this,
+									effect.value,
+								);
+							}
 						}
 					}
 				}
+				if (diagnosticsChanged) this.plugin.updateLspStatusBar();
 
-					if (!update.docChanged) return;
-					this.plugin.scheduleSymbolsRefresh();
-					this.data = update.state.doc.toString();
+				if (!update.docChanged) return;
+				this.plugin.scheduleSymbolsRefresh();
+				this.data = update.state.doc.toString();
 
 				const mirrored = update.transactions.some((tr) =>
 					tr.annotation(mirroredEdit),

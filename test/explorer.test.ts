@@ -1,5 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { getMoveDestination, isWorkspaceItemVisible } from "../src/explorer";
+import {
+	getMoveDestination,
+	isWorkspaceItemVisible,
+	workspaceRootForPath,
+	workspaceRootPaths,
+} from "../src/explorer";
+
+describe("workspace selection", () => {
+	const files = [
+		{ name: "onyx.toml", path: "linked-api/onyx.toml" },
+		{ name: "onyx.toml", path: "linked-api/packages/site/onyx.toml" },
+		{ name: "onyx.toml", path: "onyx.toml" },
+		{ name: "package.json", path: "linked-web/package.json" },
+	];
+
+	it("finds only folders marked by a direct onyx.toml", () => {
+		expect(workspaceRootPaths(files)).toEqual([
+			"",
+			"linked-api",
+			"linked-api/packages/site",
+		]);
+	});
+
+	it("resolves a file to its nearest marked workspace", () => {
+		const roots = workspaceRootPaths(files);
+		expect(workspaceRootForPath("linked-api/src/server.ts", roots)).toBe("linked-api");
+		expect(workspaceRootForPath("linked-api/packages/site/src/page.ts", roots))
+			.toBe("linked-api/packages/site");
+		expect(workspaceRootForPath("unrelated/file.ts", roots)).toBe("");
+	});
+
+	it("does not resolve a path without a containing marked workspace", () => {
+		expect(workspaceRootForPath("unrelated/file.ts", ["linked-api"])).toBeNull();
+	});
+});
 
 describe("workspace explorer visibility", () => {
 	it.each(["node_modules", ".git", ".direnv", ".venv", "target", "dist", "build", "__pycache__"])(

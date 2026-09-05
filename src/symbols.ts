@@ -6,12 +6,14 @@ import type {
 	Position,
 	SymbolInformation,
 } from "vscode-languageserver-protocol";
+import { outlineEntries, type OutlineEntry } from "./outline";
 
 export const SYMBOLS_VIEW = "onyx-symbols";
 
 export interface SymbolTarget {
 	editor: EditorView;
 	fileName: string;
+	languageId: string | null;
 }
 
 export interface SymbolEntry {
@@ -19,21 +21,13 @@ export interface SymbolEntry {
 	detail?: string;
 	kind: number;
 	from: number;
+	to: number;
 	children: SymbolEntry[];
 }
 
 export interface SymbolsDeps {
 	getTarget(): SymbolTarget | null;
 }
-
-function symbolIcon(kind: number): string {
-	if (kind === 5 || kind === 11 || kind === 23) return "box";
-	if (kind === 6 || kind === 9 || kind === 12) return "function-square";
-	if (kind === 7 || kind === 8 || kind === 13 || kind === 14) return "variable";
-	if (kind === 2 || kind === 3 || kind === 4) return "package";
-	return "circle";
-}
-
 
 function offsetAt(editor: EditorView, position: Position): number {
 	const lineNumber = Math.min(position.line + 1, editor.state.doc.lines);
@@ -51,14 +45,16 @@ function fromLsp(
 	editor: EditorView,
 	symbol: DocumentSymbol | SymbolInformation,
 ): SymbolEntry {
-	const range = isDocumentSymbol(symbol)
+	const selectionRange = isDocumentSymbol(symbol)
 		? symbol.selectionRange
 		: symbol.location.range;
+	const scopeRange = isDocumentSymbol(symbol) ? symbol.range : symbol.location.range;
 	return {
 		name: symbol.name,
 		detail: isDocumentSymbol(symbol) ? symbol.detail : symbol.containerName,
 		kind: symbol.kind,
-		from: offsetAt(editor, range.start),
+		from: offsetAt(editor, selectionRange.start),
+		to: offsetAt(editor, scopeRange.end),
 		children: isDocumentSymbol(symbol)
 			? (symbol.children ?? []).map((child) => fromLsp(editor, child))
 			: [],
@@ -84,14 +80,40 @@ export function fallbackSymbols(text: string): SymbolEntry[] {
 							: 12;
 			symbols.push({
 				name: match[2],
-				kind,
-				from: offset + (match.index ?? 0) + line.indexOf(match[2]),
-				children: [],
+			kind,
+			from: offset + (match.index ?? 0) + line.indexOf(match[2]),
+			to: offset + line.length,
+			children: [],
 			});
 		}
 		offset += line.length + 1;
 	}
 	return symbols;
+}
+
+function outlineKind(kind: number): OutlineEntry["kind"] | null {
+	// LSP SymbolKind: Module/Namespace/Package, Class/Struct/Enum, Interface,
+	// and Method/Constructor/Function respectively.
+	if (kind === 2 || kind === 3 || kind === 4) return "namespace";
+	if (kind === 5 || kind === 10 || kind === 23) return "class";
+	if (kind === 11) return "interface";
+	if (kind === 6 || kind === 9 || kind === 12) return "function";
+	return null;
+}
+
+function outlinesFromSymbols(entries: SymbolEntry[]): OutlineEntry[] {
+	const visit = (items: SymbolEntry[]): OutlineEntry[] => items.flatMap((entry) => {
+		const children = visit(entry.children);
+		const kind = outlineKind(entry.kind);
+		return kind ? [{
+			name: entry.name,
+			kind,
+			from: entry.from,
+			to: entry.to,
+			children,
+		}] : children;
+	});
+	return visit(entries).sort((a, b) => a.from - b.from || a.to - b.to);
 }
 
 export class SymbolsPane extends ItemView {
@@ -103,12 +125,12 @@ export class SymbolsPane extends ItemView {
 	}
 
 	getViewType(): string { return SYMBOLS_VIEW; }
-	getIcon(): string { return "list-tree"; }
-	getDisplayText(): string { return "Symbols"; }
+	getIcon(): string { return "list-ordered"; }
+	getDisplayText(): string { return "Outline"; }
 
 	async onOpen(): Promise<void> {
 		this.contentEl.addClass("onyx-symbols-content");
-		this.addAction("refresh-cw", "Refresh symbols", () => void this.refresh());
+		this.addAction("refresh-cw", "Refresh outline", () => void this.refresh());
 		this.bodyEl = this.contentEl.createDiv({ cls: "onyx-symbols-list" });
 		await this.refresh();
 	}
@@ -118,13 +140,15 @@ export class SymbolsPane extends ItemView {
 		const target = this.deps.getTarget();
 		if (!this.bodyEl) return;
 		if (!target) {
-			this.render([], "Open a source file to see its symbols.", null);
+			this.render([], "Open a source file to see its functions.", null);
 			return;
 		}
 
-		let entries: SymbolEntry[] | null = null;
+		let entries = outlineEntries(target.editor.state, target.languageId);
 		const plugin = LSPPlugin.get(target.editor);
-		if (plugin?.client.connected) {
+		// The local syntax tree is immediate and includes unsaved text. Use the
+		// server only as a fallback for languages without a bundled grammar.
+		if (entries.length === 0 && plugin?.client.connected) {
 			try {
 				plugin.client.sync();
 				const result = await plugin.client.request<
@@ -133,19 +157,20 @@ export class SymbolsPane extends ItemView {
 				>("textDocument/documentSymbol", {
 					textDocument: { uri: plugin.uri },
 				});
-				entries = result?.map((symbol) => fromLsp(target.editor, symbol)) ?? [];
+				entries = outlinesFromSymbols(
+					result?.map((symbol) => fromLsp(target.editor, symbol)) ?? [],
+				);
 			} catch {
 				// A server may be connected without document-symbol support.
 			}
 		}
 
 		if (requestId !== this.requestId) return;
-		entries ??= fallbackSymbols(target.editor.state.doc.toString());
 		this.render(entries, target.fileName, target.editor);
 	}
 
 	private render(
-		entries: SymbolEntry[],
+		entries: OutlineEntry[],
 		label: string,
 		editor: EditorView | null,
 	): void {
@@ -153,7 +178,7 @@ export class SymbolsPane extends ItemView {
 		this.bodyEl.empty();
 		this.bodyEl.createDiv({ cls: "onyx-symbols-file", text: label });
 		if (entries.length === 0) {
-			this.bodyEl.createDiv({ cls: "onyx-symbols-empty", text: "No symbols found." });
+			this.bodyEl.createDiv({ cls: "onyx-symbols-empty", text: "No declarations found." });
 			return;
 		}
 		this.renderEntries(this.bodyEl, entries, editor);
@@ -161,16 +186,15 @@ export class SymbolsPane extends ItemView {
 
 	private renderEntries(
 		parent: HTMLElement,
-		entries: SymbolEntry[],
+		entries: OutlineEntry[],
 		editor: EditorView | null,
 	): void {
 		for (const entry of entries) {
 			const item = parent.createDiv({ cls: "tree-item onyx-symbol-item" });
 			const row = item.createDiv({ cls: "tree-item-self is-clickable" });
 			const icon = row.createDiv({ cls: "tree-item-icon" });
-			setIcon(icon, symbolIcon(entry.kind));
+			setIcon(icon, entry.kind === "function" ? "function-square" : entry.kind === "namespace" ? "braces" : "box");
 			row.createDiv({ cls: "tree-item-inner", text: entry.name });
-			if (entry.detail) row.createDiv({ cls: "tree-item-flair", text: entry.detail });
 			row.addEventListener("click", () => {
 				if (!editor) return;
 				editor.dispatch({

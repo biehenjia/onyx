@@ -90,6 +90,68 @@
 	overflow: hidden;
 }
 
+/* Keep unsaved state visible even when an Onyx editor is in a background tab. */
+.workspace-tab-header.onyx-tab-dirty .workspace-tab-header-inner-title::after {
+	content: "";
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	margin-left: 6px;
+	border-radius: 50%;
+	background: var(--text-accent);
+	vertical-align: middle;
+}
+
+/* Keep the tab compact: it shows only the innermost current function. */
+.workspace-tab-header .onyx-tab-function {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-normal);
+	margin-left: 2px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Scope breadcrumbs are injected into Obsidian's in-pane navigation header,
+ * after its file path and title—not into the tab or the window title. */
+.onyx-scope-breadcrumbs {
+	display: inline-flex;
+	align-items: center;
+	align-self: center;
+	min-width: 0;
+}
+
+.onyx-scope-separator {
+	color: var(--text-faint);
+	padding: 0 2px;
+}
+
+.view-header .view-header-title-container .onyx-scope-breadcrumb {
+	display: inline-flex;
+	align-items: center;
+	background: transparent;
+	border: 0;
+	border-radius: 0;
+	box-shadow: none;
+	min-width: 0;
+	max-width: 14em;
+	padding: 2px 1px;
+	overflow: hidden;
+	text-decoration-line: underline;
+	text-decoration-color: var(--text-muted);
+	text-decoration-thickness: 1px;
+	text-underline-offset: 3px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.view-header .view-header-title-container .onyx-scope-breadcrumb:hover {
+	background: transparent;
+	color: var(--text-accent);
+	text-decoration-color: currentcolor;
+}
+
 .onyx-code-view .cm-editor {
 	height: 100%;
 }
@@ -224,18 +286,6 @@
 	flex: 1 1 auto;
 	overflow: auto;
 	position: relative;
-}
-
-/* Keep the custom view on Obsidian's native explorer surface and state tokens. */
-.onyx-workspace-explorer-content .nav-folder.mod-root {
-	min-height: 100%;
-	position: relative;
-	z-index: 1;
-}
-
-.onyx-workspace-explorer-content .nav-folder.mod-root > .nav-folder-children {
-	margin-inline-start: 0;
-	padding-inline-start: 0;
 }
 
 .onyx-workspace-explorer-content .nav-file-title.is-active {

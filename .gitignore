@@ -12,3 +12,5 @@ main.js
 # obsidian plugin local data
 data.json
 
+# macOS Finder metadata
+.DS_Store

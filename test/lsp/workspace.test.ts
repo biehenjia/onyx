@@ -59,6 +59,17 @@ describe("ObsidianWorkspace — multi-view file tracking", () => {
 		expect(file.getView(fakeView())).toBe(v1); // unknown hint ignored
 	});
 
+	it("matches equivalent encoded file URIs", () => {
+		const { ws } = makeWorkspace();
+		const view = fakeView();
+		const path = "/private/tmp/onyx workspace lookup.ts";
+		const encoded = "file:///private/tmp/onyx%20workspace%20lookup.ts";
+		const literal = `file://${path}`;
+		ws.openFile(encoded, "typescript", view);
+
+		expect(ws.getFile(literal)?.getView()).toBe(view);
+	});
+
 	it("didClose only fires when the last pane closes", () => {
 		const { ws, client } = makeWorkspace();
 		const v1 = fakeView();

@@ -10,9 +10,23 @@ CodeMirror 6 and language-server support without leaving Obsidian.
   go-to-definition through supported language servers.
 - Multiple synchronized editor panes, file navigation, Git gutter indicators,
   and configurable autosave behavior.
+- A source-ordered, nested code outline in the right sidebar, with the current
+  namespace/class/function chain shown in the editor's navigation breadcrumb.
 
-Onyx is desktop-only. Language-server features require the corresponding
-language server to be installed on your system.
+Onyx is desktop-only. Language servers are configured explicitly by each
+project. Put `onyx.toml` at the project root, for example:
+
+```toml
+name = "My C++ project"
+
+[lsp.cpp]
+command = ["nix", "develop", ".", "-c", "clangd"]
+```
+
+The file's directory is the project root. Commands are exact argument arrays:
+Onyx does not invoke a shell, guess project boundaries, choose server versions,
+or modify `PATH`. Before running a new or changed configuration, use **Onyx:
+Trust current project's language server** and review the displayed command.
 
 ## Installation
 

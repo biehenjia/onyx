@@ -1,14 +1,19 @@
 import {
 	hoverTooltips,
 	LSPClient,
+	LSPPlugin,
 	serverCompletion,
 	serverDiagnostics,
 	signatureHelp,
 	Workspace,
 } from "@codemirror/lsp-client";
+import type { LSPClientExtension } from "@codemirror/lsp-client";
+import { setDiagnostics } from "@codemirror/lint";
+import type { PublishDiagnosticsParams } from "vscode-languageserver-protocol";
 import { ClosureInfo, StdioTransport } from "./transport";
 import { resolveServer } from "./servers";
 import { languageByName } from "../languages";
+import { lspKey } from "./setup";
 
 /** Lifecycle of a `(projectRoot × languageId)` server, surfaced to the UI (C1). */
 export type ServerStatus = "starting" | "running" | "crashed" | "absent";
@@ -29,6 +34,7 @@ interface Entry {
 	realRoot: string;
 	languageId: string;
 	rootUri: string;
+	command: string[];
 	client: LSPClient | null;
 	transport: StdioTransport | null;
 	refs: number;
@@ -49,6 +55,54 @@ const RESTART_BACKOFF_MS = [500, 2_000, 5_000];
 const STABLE_AFTER_MS = 60_000;
 
 /**
+ * Apply diagnostics without the dependency's exact-version guard. clangd may
+ * publish a result for the last synchronized version just as the workspace has
+ * advanced its counter; dropping that result makes valid diagnostics disappear
+ * entirely. Pending editor changes are still mapped onto the current document.
+ *
+ * `serverDiagnostics()` remains installed below for its 500 ms auto-sync view
+ * extension. Registering this handler first consumes the notification before
+ * its stricter built-in handler sees it.
+ */
+function onyxDiagnostics(): LSPClientExtension {
+	return {
+		clientCapabilities: {
+			textDocument: { publishDiagnostics: { versionSupport: true } },
+		},
+		notificationHandlers: {
+			"textDocument/publishDiagnostics": (client, rawParams) => {
+				const params = rawParams as PublishDiagnosticsParams;
+				const file = client.workspace.getFile(params.uri);
+				const view = file?.getView() ?? null;
+				const plugin = view ? LSPPlugin.get(view) : null;
+				if (!file || !view || !plugin) return false;
+
+				view.dispatch(setDiagnostics(view.state, params.diagnostics.map((item) => ({
+					from: plugin.unsyncedChanges.mapPos(
+						plugin.fromPosition(item.range.start, plugin.syncedDoc),
+					),
+					to: plugin.unsyncedChanges.mapPos(
+						plugin.fromPosition(item.range.end, plugin.syncedDoc),
+					),
+					severity: item.severity === 2
+						? "warning" as const
+						: item.severity === 3
+							? "info" as const
+							: item.severity === 4
+								? "hint" as const
+								: "error" as const,
+					message: typeof item.message === "string"
+						? item.message
+						: item.message.value,
+					source: item.source,
+				}))));
+				return true;
+			},
+		},
+	};
+}
+
+/**
  * One language server per `${realProjectRoot}\0${languageId}`, shared by every
  * editor that resolves to that pair. Reference-counted: the server starts on the
  * first {@link acquire} and stops on an idle timeout after the last
@@ -65,7 +119,6 @@ export class LspRegistry {
 	private readonly listeners = new Set<Listener>();
 
 	constructor(
-		private readonly getOverrides: () => Record<string, string[]>,
 		/** Sanitise + syntax-highlight an LSP doc HTML string for a given
 		 *  language id (hover / signature / completion). */
 		private readonly sanitizeDoc: (
@@ -78,7 +131,7 @@ export class LspRegistry {
 	) {}
 
 	static keyFor(realRoot: string, languageId: string): string {
-		return `${realRoot}\0${languageId}`;
+		return lspKey(realRoot, languageId);
 	}
 
 	/** Subscribe to server lifecycle changes; returns an unsubscribe function. */
@@ -96,6 +149,7 @@ export class LspRegistry {
 		realRoot: string,
 		rootUri: string,
 		languageId: string,
+		command: string[] = [],
 	): LSPClient | null {
 		const key = LspRegistry.keyFor(realRoot, languageId);
 		let entry = this.entries.get(key);
@@ -106,6 +160,7 @@ export class LspRegistry {
 				realRoot,
 				languageId,
 				rootUri,
+				command,
 				client: null,
 				transport: null,
 				refs: 0,
@@ -120,11 +175,21 @@ export class LspRegistry {
 			// timers): cheap, and it lets "Restart language server" or simply
 			// reopening the file re-resolve once a binary is installed.
 			if (!this.startProcess(entry)) return null;
+		} else if (entry.command.join("\0") !== command.join("\0")) {
+			// A changed onyx.toml is separately re-trusted. Apply its exact argv
+			// immediately, including for peers already using this project server.
+			this.clearTimers(entry);
+			this.teardownProcess(entry);
+			entry.rootUri = rootUri;
+			entry.command = command;
+			entry.restarts = 0;
+			if (!this.startProcess(entry)) return null;
 		} else if (entry.dead) {
 			// Revive a crash tombstone: a fresh editor wants this server again.
 			this.clearTimers(entry);
 			entry.restarts = 0;
 			entry.rootUri = rootUri;
+			entry.command = command;
 			if (!this.startProcess(entry)) return null;
 		}
 
@@ -191,6 +256,7 @@ export class LspRegistry {
 				hoverTooltips(),
 				serverCompletion(),
 				signatureHelp(),
+				onyxDiagnostics(),
 				serverDiagnostics(),
 			],
 		});
@@ -205,7 +271,7 @@ export class LspRegistry {
 		const res = resolveServer(
 			entry.realRoot,
 			entry.languageId,
-			this.getOverrides(),
+			entry.command,
 		);
 		if (!res.ok) {
 			entry.dead = true;

@@ -1,11 +1,21 @@
 import { fileURLToPath } from "url";
-import { Notice, TFile } from "obsidian";
+import { realpathSync } from "fs";
+import { Notice, TFile, type App } from "obsidian";
 import type { TransactionSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { LSPPlugin, Workspace } from "@codemirror/lsp-client";
 import type { LSPClient, WorkspaceFile } from "@codemirror/lsp-client";
-import { CodeView, mirroredEdit, VIEW_TYPE_CODE } from "../main";
-import type OnyxPlugin from "../main";
+import {
+	isNavigableCodeView,
+	mirroredEdit,
+	VIEW_TYPE_CODE,
+} from "../editor/contracts";
+import type { VaultMap } from "./roots";
+
+interface WorkspaceHost {
+	app: App;
+	vaultMap: VaultMap | null;
+}
 
 /** Where `displayFile` should put a cross-file jump target. */
 export type OpenMode = "replace" | "tab";
@@ -53,6 +63,16 @@ function uriToPath(uri: string): string | null {
 	}
 }
 
+function canonicalUriPath(uri: string): string | null {
+	const path = uriToPath(uri);
+	if (!path) return null;
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
+}
+
 /**
  * A `@codemirror/lsp-client` {@link Workspace} that supports multiple views per
  * file and resolves cross-file jumps (go-to-definition and friends) into real
@@ -67,9 +87,22 @@ export class ObsidianWorkspace extends Workspace {
 
 	constructor(
 		client: LSPClient,
-		private readonly plugin: OnyxPlugin,
+		private readonly plugin: WorkspaceHost,
 	) {
 		super(client);
+	}
+
+	/**
+	 * Servers may return a canonicalized or differently escaped file URI. Match
+	 * those against the real filesystem path so notifications for symlinked and
+	 * percent-encoded vault paths still reach their open editor.
+	 */
+	getFile(uri: string): WorkspaceFile | null {
+		const exact = super.getFile(uri);
+		if (exact) return exact;
+		const target = canonicalUriPath(uri);
+		if (!target) return null;
+		return this.files.find((file) => canonicalUriPath(file.uri) === target) ?? null;
 	}
 
 	private nextVersion(uri: string): number {
@@ -189,7 +222,7 @@ export class ObsidianWorkspace extends Workspace {
 			mode === "tab" ? "tab" : false,
 		);
 		await leaf.openFile(tfile);
-		return leaf.view instanceof CodeView ? leaf.view.lspEditorView : null;
+		return isNavigableCodeView(leaf.view) ? leaf.view.lspEditorView : null;
 	}
 
 	private findOpenView(vaultPath: string | null): EditorView | null {
@@ -198,7 +231,7 @@ export class ObsidianWorkspace extends Workspace {
 			VIEW_TYPE_CODE,
 		)) {
 			const view = leaf.view;
-			if (view instanceof CodeView && view.file?.path === vaultPath) {
+			if (isNavigableCodeView(view) && view.file?.path === vaultPath) {
 				this.plugin.app.workspace.setActiveLeaf(leaf, { focus: true });
 				return view.lspEditorView;
 			}

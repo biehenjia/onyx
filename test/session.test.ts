@@ -143,6 +143,19 @@ describe("DocumentSession — multi-view LSP binding", () => {
 		expect(v1.setLspExtension).toHaveBeenCalledWith("EXT2");
 		expect(v2.setLspExtension).toHaveBeenCalledWith("EXT2");
 	});
+
+	it("replaces a project binding after configuration is trusted", () => {
+		const { session } = makeSession();
+		const view = fakeView();
+		session.attach(asView(view));
+		const { binding, client } = fakeBinding();
+
+		session.replaceLspBinding(binding);
+
+		expect(binding.acquire).toHaveBeenCalledOnce();
+		expect(client.plugin).toHaveBeenCalledOnce();
+		expect(view.setLspExtension).toHaveBeenLastCalledWith("EXT");
+	});
 });
 
 describe("DocumentSession — mirroring & dirty state", () => {

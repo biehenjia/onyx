@@ -19,6 +19,8 @@ export interface WorkspaceExplorerDeps {
 	openFile(file: TFile, newLeaf: boolean): Promise<void>;
 	gitStatus(rootPath: string): Promise<Map<string, GitFileStatus>>;
 	isDirty(path: string): boolean;
+	workspacePaths(): readonly string[];
+	addWorkspace(path: string): Promise<void>;
 }
 
 interface MetadataCacheWithIgnore {
@@ -58,6 +60,28 @@ const EXPLORER_DRAG_TYPE = "application/x-onyx-workspace-path";
 export type MoveDestination =
 	| { path: string }
 	| { error: string };
+
+/** Paths of folders explicitly marked as workspaces by a direct onyx.toml. */
+export function workspaceRootPaths(files: readonly Pick<TFile, "name" | "path">[]): string[] {
+	return [...new Set(files
+		.filter((file) => file.name === "onyx.toml")
+		.map((file) => file.path.includes("/")
+			? file.path.slice(0, file.path.lastIndexOf("/"))
+			: ""))]
+		.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+}
+
+/** The nearest marked workspace containing a vault-relative file path. */
+export function workspaceRootForPath(
+	path: string | null | undefined,
+	workspaceRoots: readonly string[],
+): string | null {
+	if (!path) return null;
+	return [...workspaceRoots]
+		.sort((a, b) => b.length - a.length)
+		.find((root) => root === "" || path === root || path.startsWith(`${root}/`))
+		?? null;
+}
 
 /** Resolve and validate a drag move without touching the vault. */
 export function getMoveDestination(
@@ -99,19 +123,23 @@ function compareFiles(a: TAbstractFile, b: TAbstractFile): number {
 	return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 }
 
-class FolderPicker extends FuzzySuggestModal<TFolder> {
+class WorkspacePicker extends FuzzySuggestModal<TFolder> {
 	constructor(
 		app: WorkspaceExplorerPane["app"],
+		placeholder: string,
+		private readonly paths: readonly string[],
 		private readonly pick: (folder: TFolder) => void,
 	) {
 		super(app);
-		this.setPlaceholder("Choose workspace folder...");
+		this.setPlaceholder(placeholder);
 	}
 
 	getItems(): TFolder[] {
-		return this.app.vault
-			.getAllLoadedFiles()
-			.filter((item): item is TFolder => item instanceof TFolder)
+		const roots = new Set(workspaceRootPaths(this.app.vault.getFiles()));
+		const allowed = new Set(this.paths);
+		return this.app.vault.getAllLoadedFiles()
+			.filter((item): item is TFolder =>
+				item instanceof TFolder && roots.has(item.path) && allowed.has(item.path))
 			.sort(compareFiles);
 	}
 
@@ -125,9 +153,13 @@ class FolderPicker extends FuzzySuggestModal<TFolder> {
 }
 
 export class WorkspaceExplorerPane extends ItemView {
-	private rootPath = "";
+	/** null means no marked workspace has been selected yet. */
+	private rootPath: string | null = null;
+	/** A folder shown by itself, while retaining rootPath as the workspace root. */
+	private focusedPath: string | null = null;
 	private collapsed = new Set<string>();
 	private filesEl: HTMLElement | null = null;
+	private focusToggleButton: HTMLElement | null = null;
 	private activeHighlightEl: HTMLElement | null = null;
 	private gitStatuses = new Map<string, GitFileStatus>();
 	private refreshGeneration = 0;
@@ -149,43 +181,77 @@ export class WorkspaceExplorerPane extends ItemView {
 	}
 
 	getDisplayText(): string {
+		if (this.rootPath === null) return "Workspace explorer";
 		return this.rootPath.split("/").pop() || this.app.vault.getName();
 	}
 
 	getState(): Record<string, unknown> {
-		return { rootPath: this.rootPath };
+		return { rootPath: this.rootPath, focusedPath: this.focusedPath };
 	}
 
 	async setState(state: unknown, result: ViewStateResult): Promise<void> {
-		const next = (state as { rootPath?: unknown } | null)?.rootPath;
-		this.rootPath = typeof next === "string" ? next : "";
+		const next = (state as { rootPath?: unknown; focusedPath?: unknown } | null);
+		const candidateRoot = typeof next?.rootPath === "string" ? next.rootPath : null;
+		this.rootPath = candidateRoot !== null
+			&& workspaceRootPaths(this.app.vault.getFiles()).includes(candidateRoot)
+			&& this.deps.workspacePaths().includes(candidateRoot)
+			? candidateRoot
+			: null;
+		this.focusedPath = typeof next?.focusedPath === "string" ? next.focusedPath : null;
 		await super.setState(state, result);
 		void this.refresh();
 	}
 
 	setRoot(path: string): void {
 		this.rootPath = path;
+		this.focusedPath = null;
 		this.collapsed.clear();
 		this.app.workspace.requestSaveLayout();
 		void this.refresh();
 	}
 
+	private setFocusedFolder(path: string): void {
+		this.focusedPath = path;
+		this.collapsed.clear();
+		this.app.workspace.requestSaveLayout();
+		void this.refresh();
+	}
+
+	private clearFolderFocus(): void {
+		if (this.focusedPath === null) return;
+		this.focusedPath = null;
+		this.app.workspace.requestSaveLayout();
+		this.renderTree();
+	}
+
 	async onOpen(): Promise<void> {
 		this.contentEl.addClass("onyx-workspace-explorer-content");
 		this.addAction("file-plus", "New source file", () =>
-			this.deps.newFile(this.rootPath),
+			this.deps.newFile(this.focusedPath ?? this.rootPath ?? ""),
 		);
-		this.addAction("folder-search", "Change workspace folder", () =>
-			this.openFolderPicker(),
+		this.addAction("folder-search", "Select workspace", () =>
+			this.openWorkspacePicker(),
+		);
+		this.addAction("folder-plus", "Add workspace", () =>
+			this.openAddWorkspacePicker(),
 		);
 
 		const header = this.contentEl.createDiv({ cls: "nav-header" });
 		const toolbar = header.createDiv({ cls: "nav-buttons-container" });
 		this.addToolbarButton(toolbar, "file-plus", "New source file", () =>
-			this.deps.newFile(this.rootPath),
+			this.deps.newFile(this.focusedPath ?? this.rootPath ?? ""),
 		);
-		this.addToolbarButton(toolbar, "folder-search", "Change workspace folder", () =>
-			this.openFolderPicker(),
+		this.addToolbarButton(toolbar, "folder-plus", "Add workspace", () =>
+			this.openAddWorkspacePicker(),
+		);
+		this.addToolbarButton(toolbar, "folder-search", "Select workspace", () =>
+			this.openWorkspacePicker(),
+		);
+		this.focusToggleButton = this.addToolbarButton(
+			toolbar,
+			"maximize-2",
+			"Show entire workspace",
+			() => this.clearFolderFocus(),
 		);
 		this.addToolbarButton(toolbar, "fold", "Collapse all", () => {
 			this.collapseAll();
@@ -212,7 +278,7 @@ export class WorkspaceExplorerPane extends ItemView {
 			event.preventDefault();
 			const targetFolder = this.dropFolderAt(event.target);
 			this.clearDropTarget();
-			void this.moveDraggedItem(targetFolder?.dataset.dropPath ?? this.rootPath);
+			void this.moveDraggedItem(targetFolder?.dataset.dropPath ?? this.focusedPath ?? this.rootPath ?? "");
 		});
 		this.registerEvent(this.app.vault.on("create", () => void this.refresh()));
 		this.registerEvent(this.app.vault.on("delete", () => void this.refresh()));
@@ -233,21 +299,59 @@ export class WorkspaceExplorerPane extends ItemView {
 		icon: string,
 		label: string,
 		onClick: () => void,
-	): void {
+	): HTMLElement {
 		const button = parent.createDiv({ cls: "clickable-icon nav-action-button" });
 		button.setAttr("aria-label", label);
 		setIcon(button, icon);
 		button.addEventListener("click", onClick);
+		return button;
 	}
 
-	private openFolderPicker(): void {
-		new FolderPicker(this.app, (folder) => this.setRoot(folder.path)).open();
+	private openWorkspacePicker(): void {
+		const paths = this.validWorkspacePaths(this.deps.workspacePaths());
+		if (paths.length === 0) {
+			new Notice("Add a workspace first.");
+			return;
+		}
+		new WorkspacePicker(this.app, "Choose workspace...", paths, (folder) =>
+			this.setRoot(folder.path),
+		).open();
+	}
+
+	private openAddWorkspacePicker(): void {
+		const added = new Set(this.deps.workspacePaths());
+		const paths = workspaceRootPaths(this.app.vault.getFiles())
+			.filter((path) => !added.has(path));
+		if (paths.length === 0) {
+			new Notice("No unadded folders with a top-level onyx.toml were found.");
+			return;
+		}
+		new WorkspacePicker(this.app, "Add workspace...", paths, (folder) => {
+			void this.deps.addWorkspace(folder.path).then(
+				() => this.setRoot(folder.path),
+				() => new Notice(`Could not add workspace “${folder.name}”.`),
+			);
+		}).open();
+	}
+
+	private validWorkspacePaths(paths: readonly string[]): string[] {
+		const available = new Set(workspaceRootPaths(this.app.vault.getFiles()));
+		return paths.filter((path) => available.has(path));
 	}
 
 	private rootFolder(): TFolder | null {
+		if (this.rootPath === null) return null;
 		const item = this.rootPath
 			? this.app.vault.getAbstractFileByPath(this.rootPath)
 			: this.app.vault.getRoot();
+		return item instanceof TFolder ? item : null;
+	}
+
+	private focusedFolder(): TFolder | null {
+		if (this.focusedPath === null || this.rootPath === null) return null;
+		if (this.rootPath && this.focusedPath !== this.rootPath
+			&& !this.focusedPath.startsWith(`${this.rootPath}/`)) return null;
+		const item = this.app.vault.getAbstractFileByPath(this.focusedPath);
 		return item instanceof TFolder ? item : null;
 	}
 
@@ -270,27 +374,37 @@ export class WorkspaceExplorerPane extends ItemView {
 		this.activeHighlightEl = this.filesEl.createDiv({
 			cls: "onyx-workspace-active-highlight",
 		});
+		this.filesEl.removeClass("onyx-workspace-folder-focused");
+		this.focusToggleButton?.removeClass("is-active");
 		const root = this.rootFolder();
 		if (!root) {
 			this.filesEl.createDiv({
 				cls: "onyx-workspace-empty",
-				text: "Workspace folder no longer exists.",
+				text: this.rootPath === null
+					? "Select a workspace marked by onyx.toml."
+					: "Workspace folder no longer exists.",
 			});
 			return;
 		}
-		// Match the native file explorer's root structure so core styles and
-		// community themes can target this tree without Onyx-specific rules.
-		const rootItem = this.filesEl.createDiv({ cls: "tree-item nav-folder mod-root" });
-		rootItem.setAttr("data-drop-path", this.rootPath);
-		const children = rootItem.createDiv({
-			cls: "tree-item-children nav-folder-children",
-		});
-		for (const child of [...root.children].sort(compareFiles)) {
-			this.renderItem(children, child);
+		const displayRoot = this.focusedFolder() ?? root;
+		const focused = displayRoot !== root;
+		this.filesEl.toggleClass("onyx-workspace-folder-focused", focused);
+		this.focusToggleButton?.toggleClass("is-active", focused);
+		if (this.focusToggleButton) {
+			this.focusToggleButton.setAttr(
+				"aria-label",
+				focused ? "Show entire workspace" : "No folder focus active",
+			);
 		}
-		if (this.adapterGitIgnore && !root.children.some(
+		// Obsidian's file explorer keeps its virtual root out of the DOM.
+		// Render top-level entries directly to avoid giving that invisible level
+		// an indentation guide and retain the native class hierarchy.
+		for (const child of [...displayRoot.children].sort(compareFiles)) {
+			this.renderItem(this.filesEl, child);
+		}
+		if (this.adapterGitIgnore && displayRoot === root && !root.children.some(
 			(child) => child.path === this.adapterGitIgnore?.path,
-		)) this.renderFile(children, this.adapterGitIgnore);
+		)) this.renderFile(this.filesEl, this.adapterGitIgnore);
 		this.positionActiveHighlight();
 	}
 
@@ -351,6 +465,12 @@ export class WorkspaceExplorerPane extends ItemView {
 
 	async refresh(): Promise<void> {
 		const generation = ++this.refreshGeneration;
+		if (this.rootPath === null) {
+			this.gitStatuses.clear();
+			this.adapterGitIgnore = null;
+			this.renderTree();
+			return;
+		}
 		const [statuses, adapterGitIgnore] = await Promise.all([
 			this.deps.gitStatus(this.rootPath),
 			this.findAdapterGitIgnore(),
@@ -363,6 +483,7 @@ export class WorkspaceExplorerPane extends ItemView {
 
 	/** Dotfiles can exist on disk without an entry in Obsidian's vault index. */
 	private async findAdapterGitIgnore(): Promise<TFile | null> {
+		if (this.rootPath === null) return null;
 		const path = this.rootPath ? `${this.rootPath}/.gitignore` : ".gitignore";
 		if (this.app.vault.getAbstractFileByPath(path) instanceof TFile) return null;
 		try {
@@ -452,11 +573,11 @@ export class WorkspaceExplorerPane extends ItemView {
 			else this.collapsed.add(folder.path);
 			this.renderTree();
 		});
-			title.addEventListener("contextmenu", (event) => {
+		title.addEventListener("contextmenu", (event) => {
 			const menu = new Menu();
 			menu.addItem((entry) =>
-				entry.setTitle("Use as workspace root").setIcon("folder-root").onClick(() =>
-					this.setRoot(folder.path),
+				entry.setTitle("Focus this folder").setIcon("maximize-2").onClick(() =>
+					this.setFocusedFolder(folder.path),
 				),
 			);
 			menu.addItem((entry) =>

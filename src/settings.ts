@@ -1,6 +1,5 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
 import type { SettingDefinitionItem } from "obsidian";
-import type OnyxPlugin from "./main";
 
 export type SavePolicy = "afterDelay" | "onFocusChange" | "manual";
 export type ColorScheme = "onyx" | "obsidian";
@@ -21,6 +20,8 @@ export interface OnyxSettings {
 	lineHeight: number;
 	/** Programming ligatures (calt/liga). */
 	ligatures: boolean;
+	/** Number of spaces inserted for indentation and used to display tabs. */
+	tabSize: number;
 	/** Draw indentation guides. */
 	indentGuides: boolean;
 	/** Brighten the guide for the current scope. */
@@ -33,12 +34,8 @@ export interface OnyxSettings {
 	gitEnabled: boolean;
 	/** Resolve vault-root symlinks whose targets live outside the vault. */
 	externalSymlinksEnabled: boolean;
-	/**
-	 * Per-language-id command override, e.g. `{ "python": ["pyright-langserver",
-	 * "--stdio"] }`. Empty entries fall back to auto-detection. Edit in data.json
-	 * for now — no settings UI yet.
-	 */
-	lspServers: Record<string, string[]>;
+	/** Vault-relative project roots explicitly added to the workspace explorer. */
+	workspacePaths: string[];
 	/** When configured lint commands run. Manual is always available. */
 	lintTrigger: LintTrigger;
 	/** Debounce before an `afterDelay` lint run (ms). */
@@ -55,17 +52,25 @@ export const DEFAULT_SETTINGS: OnyxSettings = {
 	fontSize: 0,
 	lineHeight: 1.5,
 	ligatures: true,
+	tabSize: 4,
 	indentGuides: true,
 	activeIndentGuide: true,
 	stickyScroll: true,
 	lspEnabled: true,
 	gitEnabled: true,
 	externalSymlinksEnabled: false,
-	lspServers: {},
+	workspacePaths: [],
 	lintTrigger: "manual",
 	lintDelayMs: 1000,
 	lintCommands: {},
 };
+
+interface SettingsHost extends Plugin {
+	settings: OnyxSettings;
+	saveSettings(): Promise<void>;
+	applyStyleToOpenViews(): void;
+	applyIntegrationSettings(): void;
+}
 
 function parseLintCommands(value: string): Record<string, string[]> {
 	const parsed: unknown = JSON.parse(value);
@@ -89,9 +94,9 @@ function validateLintCommandsJson(value: string): string | void {
 }
 
 export class OnyxSettingTab extends PluginSettingTab {
-	private plugin: OnyxPlugin;
+	private plugin: SettingsHost;
 
-	constructor(app: App, plugin: OnyxPlugin) {
+	constructor(app: App, plugin: SettingsHost) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -124,7 +129,7 @@ export class OnyxSettingTab extends PluginSettingTab {
 			},
 			{
 				name: "Language servers",
-				desc: "Connect a language server for supported files — hover, completion, signature help and diagnostics. Onyx looks for the server in the project's virtualenv and node modules, then the system path. Restart Obsidian after changing.",
+				desc: "Connect language servers declared by a trusted onyx.toml project.",
 				control: { type: "toggle", key: "lspEnabled" },
 			},
 			{
@@ -197,6 +202,11 @@ export class OnyxSettingTab extends PluginSettingTab {
 						control: { type: "toggle", key: "ligatures" },
 					},
 					{
+						name: "Spaces per tab",
+						desc: "Number of spaces inserted when indenting and used to display tab characters.",
+						control: { type: "slider", key: "tabSize", min: 1, max: 8, step: 1 },
+					},
+					{
 						name: "Sticky scroll",
 						desc: "Pin enclosing namespaces, types, and functions at the top of the editor.",
 						control: { type: "toggle", key: "stickyScroll" },
@@ -227,7 +237,7 @@ export class OnyxSettingTab extends PluginSettingTab {
 			return;
 		}
 		const settingKey = key as keyof OnyxSettings;
-		if (!(settingKey in this.plugin.settings) || settingKey === "lspServers") return;
+		if (!(settingKey in this.plugin.settings)) return;
 		if (settingKey === "fontFamily") value = String(value).trim();
 		(this.plugin.settings as unknown as Record<string, unknown>)[settingKey] = value;
 		await this.commit();
@@ -238,8 +248,8 @@ export class OnyxSettingTab extends PluginSettingTab {
 		}
 	}
 
-	// Required as a fallback for Obsidian versions older than 1.13.0.
-	display(): void {
+	/** Legacy renderer retained temporarily while the declarative migration settles. */
+	showLegacySettings(): void {
 		this.renderLegacySettings();
 	}
 
@@ -285,7 +295,7 @@ export class OnyxSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Language servers")
 			.setDesc(
-				"Connect a language server for supported files — hover, completion, signature help and diagnostics. Onyx looks for the server in the project's virtualenv and node modules, then the system path. Restart Obsidian after changing.",
+				"Connect language servers declared by a trusted onyx.toml project.",
 			)
 			.addToggle((toggle) =>
 				toggle
@@ -433,6 +443,19 @@ export class OnyxSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.ligatures)
 					.onChange(async (value) => {
 						this.plugin.settings.ligatures = value;
+						await this.commit();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Spaces per tab")
+			.setDesc("Number of spaces inserted when indenting and used to display tab characters.")
+			.addSlider((slider) =>
+				slider
+					.setLimits(1, 8, 1)
+					.setValue(this.plugin.settings.tabSize)
+					.onChange(async (value) => {
+						this.plugin.settings.tabSize = value;
 						await this.commit();
 					}),
 			);

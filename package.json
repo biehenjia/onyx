@@ -1,6 +1,6 @@
 {
 	"name": "onyx",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"description": "Edit source files with CodeMirror 6 and language servers, without leaving the app.",
 	"main": "main.js",
 	"scripts": {
@@ -53,6 +53,7 @@
 		"@codemirror/lang-yaml": "^6.1.2",
 		"@codemirror/lsp-client": "^6.2.5",
 		"@replit/codemirror-indentation-markers": "^6.5.3",
+		"smol-toml": "^1.8.0",
 		"vscode-jsonrpc": "^8.2.1",
 		"vscode-languageserver-protocol": "^3.17.5"
 	}

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "os";
 import { join, dirname, sep } from "path";
 import { isUnsafeRoot, resolveProject, VaultMap } from "../../src/lsp/roots";
+import { resolveLspSetup } from "../../src/lsp/setup";
 
 describe("isUnsafeRoot", () => {
 	const HOME = process.env.HOME ?? "/home/nobody";
@@ -76,6 +77,29 @@ describe("resolveProject", () => {
 
 	it("returns null for a path that does not exist", () => {
 		expect(resolveProject(join(home, "nope", "missing.ts"))).toBeNull();
+	});
+
+	it("builds one fully canonical setup for a file reached through a symlink", () => {
+		const proj = join(home, "repo");
+		const vault = join(home, "vault");
+		mkdirSync(join(proj, "src"), { recursive: true });
+		mkdirSync(vault);
+		writeFileSync(join(proj, "onyx.toml"), [
+			'name = "Linked project"',
+			"[lsp.typescript]",
+			'command = ["nix", "develop", ".", "-c", "typescript-language-server", "--stdio"]',
+			"",
+		].join("\n"));
+		const realFile = join(proj, "src", "index.ts");
+		writeFileSync(realFile, "export {}\n");
+		symlinkSync(proj, join(vault, "linked"));
+
+		const setup = resolveLspSetup(join(vault, "linked", "src", "index.ts"), "typescript");
+		expect(setup?.realFile).toBe(realFile);
+		expect(setup?.realRoot).toBe(proj);
+		expect(setup?.fileUri).not.toContain("linked");
+		expect(setup?.key).toBe(`${proj}\0typescript`);
+		expect(setup?.command.at(-1)).toBe("--stdio");
 	});
 });
 

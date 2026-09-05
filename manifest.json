@@ -1,8 +1,8 @@
 {
 	"id": "onyx",
 	"name": "Onyx",
-	"version": "0.1.1",
-	"minAppVersion": "1.5.0",
+	"version": "0.2.0",
+	"minAppVersion": "1.13.0",
 	"description": "Edit source files with CodeMirror 6 and language servers, without leaving the app.",
 	"author": "biehenjia",
 	"authorUrl": "https://github.com/biehenjia",

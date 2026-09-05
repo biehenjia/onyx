@@ -2,7 +2,7 @@ import { ChangeSet } from "@codemirror/state";
 import type { LSPClient } from "@codemirror/lsp-client";
 import type { Diagnostic } from "@codemirror/lint";
 import type { ConflictChoice } from "./conflict";
-import type { CodeView } from "./main";
+import type { SessionView } from "./editor/contracts";
 import type { SavePolicy } from "./settings";
 
 /**
@@ -57,7 +57,7 @@ export interface LspBinding {
  * One instance per path, created and dropped by the plugin's session registry.
  */
 export class DocumentSession {
-	private views = new Set<CodeView>();
+	private views = new Set<SessionView>();
 	/** Contents as of the last successful write (or initial load). */
 	private savedText: string;
 	dirty = false;
@@ -90,13 +90,13 @@ export class DocumentSession {
 		return this.views.size;
 	}
 
-	attach(view: CodeView): void {
+	attach(view: SessionView): void {
 		this.views.add(view);
 		this.bindLsp(view);
 		this.recomputeDirty();
 	}
 
-	detach(view: CodeView): void {
+	detach(view: SessionView): void {
 		// Flush pending edits to the server while every view's LSP plugin is
 		// still mounted, so if a peer takes over as the workspace's sync source
 		// it starts from a synced baseline (guards a fast type-then-close).
@@ -116,7 +116,7 @@ export class DocumentSession {
 	}
 
 	/** Hand `view` a fresh `client.plugin(...)` (or `[]` when there's no server). */
-	private bindLsp(view: CodeView): void {
+	private bindLsp(view: SessionView): void {
 		if (!this.lsp) return;
 		if (!this.lspClient) this.lspClient = this.lsp.acquire();
 		view.setLspExtension(
@@ -161,7 +161,28 @@ export class DocumentSession {
 		}
 	}
 
-	private get anyView(): CodeView | undefined {
+	/** Acquire a binding that became available after the view was attached. */
+	connectLsp(): void {
+		if (!this.lsp || this.lspClient) return;
+		this.lspClient = this.lsp.acquire();
+		if (!this.lspClient) return;
+		for (const view of this.views) {
+			view.setLspExtension(
+				this.lspClient.plugin(this.lsp.fileUri, this.lsp.languageId),
+			);
+		}
+	}
+
+	/** Replace project configuration without recreating the document session. */
+	replaceLspBinding(binding: LspBinding | null): void {
+		if (this.lspClient) this.lsp?.release();
+		this.lspClient = null;
+		this.lsp = binding;
+		for (const view of this.views) view.setLspExtension([]);
+		this.connectLsp();
+	}
+
+	private get anyView(): SessionView | undefined {
 		return this.views.values().next().value;
 	}
 
@@ -171,7 +192,7 @@ export class DocumentSession {
 	}
 
 	/** A local edit in `origin`: mirror to peers, refresh dirty, schedule a save. */
-		handleLocalChange(origin: CodeView, changes: ChangeSet): void {
+	handleLocalChange(origin: SessionView, changes: ChangeSet): void {
 		for (const view of this.views) {
 			if (view !== origin) view.applyMirroredChanges(changes);
 		}
@@ -210,7 +231,7 @@ export class DocumentSession {
 	 * replay them onto the peers so every pane shows the same underlines. Peer
 	 * docs are kept byte-identical by mirroring, so the offsets carry over.
 	 */
-	mirrorDiagnostics(origin: CodeView, diagnostics: readonly Diagnostic[]): void {
+	mirrorDiagnostics(origin: SessionView, diagnostics: readonly Diagnostic[]): void {
 		for (const view of this.views) {
 			if (view !== origin) view.applyMirroredDiagnostics(diagnostics);
 		}
